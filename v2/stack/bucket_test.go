@@ -6,6 +6,7 @@ package stack
 
 import (
 	"bytes"
+	"io"
 	"io/ioutil"
 	"strings"
 	"testing"
@@ -22,16 +23,19 @@ func TestAggregateNotAggressive(t *testing.T) {
 		"",
 		"goroutine 6 [chan receive]:",
 		"main.func·001(0x11000000, 2)",
-		"	/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
 		"",
 		"goroutine 7 [chan receive]:",
 		"main.func·001(0x21000000, 2)",
-		"	/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
 		"",
 	}
-	c, err := ParseDump(bytes.NewBufferString(strings.Join(data, "\n")), ioutil.Discard, false)
-	if err != nil {
+	s, suffix, err := ScanSnapshot(bytes.NewBufferString(strings.Join(data, "\n")), ioutil.Discard, defaultOpts())
+	if err != io.EOF {
 		t.Fatal(err)
+	}
+	if s == nil {
+		t.Fatal("expected snapshot")
 	}
 	want := []*Bucket{
 		{
@@ -41,7 +45,7 @@ func TestAggregateNotAggressive(t *testing.T) {
 					Calls: []Call{
 						newCall(
 							"main.func·001",
-							Args{Values: []Arg{{Value: 0x11000000}, {Value: 2}}},
+							Args{Values: []Arg{{Value: 0x11000000, IsPtr: true}, {Value: 2}}},
 							"/gopath/src/github.com/maruel/panicparse/stack/stack.go",
 							72),
 					},
@@ -57,7 +61,7 @@ func TestAggregateNotAggressive(t *testing.T) {
 					Calls: []Call{
 						newCall(
 							"main.func·001",
-							Args{Values: []Arg{{Value: 0x21000000, Name: "#1"}, {Value: 2}}},
+							Args{Values: []Arg{{Value: 0x21000000, Name: "#1", IsPtr: true}, {Value: 2}}},
 							"/gopath/src/github.com/maruel/panicparse/stack/stack.go",
 							72),
 					},
@@ -66,7 +70,12 @@ func TestAggregateNotAggressive(t *testing.T) {
 			IDs: []int{7},
 		},
 	}
-	compareBuckets(t, want, Aggregate(c.Goroutines, ExactLines))
+	a := s.Aggregate(ExactLines)
+	compareBuckets(t, want, a.Buckets)
+	if a.Snapshot != s {
+		t.Fatal("unexpected snapshot")
+	}
+	compareString(t, "", string(suffix))
 }
 
 func TestAggregateExactMatching(t *testing.T) {
@@ -77,30 +86,37 @@ func TestAggregateExactMatching(t *testing.T) {
 		"",
 		"goroutine 6 [chan receive]:",
 		"main.func·001()",
-		"	/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
 		"created by main.mainImpl",
-		"	/gopath/src/github.com/maruel/panicparse/stack/stack.go:74 +0xeb",
+		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:74 +0xeb",
 		"",
 		"goroutine 7 [chan receive]:",
 		"main.func·001()",
-		"	/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
 		"created by main.mainImpl",
-		"	/gopath/src/github.com/maruel/panicparse/stack/stack.go:74 +0xeb",
+		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:74 +0xeb",
 		"",
 	}
-	c, err := ParseDump(bytes.NewBufferString(strings.Join(data, "\n")), &bytes.Buffer{}, false)
-	if err != nil {
+	s, suffix, err := ScanSnapshot(bytes.NewBufferString(strings.Join(data, "\n")), ioutil.Discard, defaultOpts())
+	if err != io.EOF {
 		t.Fatal(err)
+	}
+	if s == nil {
+		t.Fatal("expected snapshot")
 	}
 	want := []*Bucket{
 		{
 			Signature: Signature{
 				State: "chan receive",
-				CreatedBy: newCall(
-					"main.mainImpl",
-					Args{},
-					"/gopath/src/github.com/maruel/panicparse/stack/stack.go",
-					74),
+				CreatedBy: Stack{
+					Calls: []Call{
+						newCall(
+							"main.mainImpl",
+							Args{},
+							"/gopath/src/github.com/maruel/panicparse/stack/stack.go",
+							74),
+					},
+				},
 				Stack: Stack{
 					Calls: []Call{
 						newCall(
@@ -115,7 +131,8 @@ func TestAggregateExactMatching(t *testing.T) {
 			First: true,
 		},
 	}
-	compareBuckets(t, want, Aggregate(c.Goroutines, ExactLines))
+	compareBuckets(t, want, s.Aggregate(ExactLines).Buckets)
+	compareString(t, "", string(suffix))
 }
 
 func TestAggregateAggressive(t *testing.T) {
@@ -125,21 +142,24 @@ func TestAggregateAggressive(t *testing.T) {
 		"panic: runtime error: index out of range",
 		"",
 		"goroutine 6 [chan receive, 10 minutes]:",
-		"main.func·001(0x11000000, 2)",
-		"	/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"main.func·001(0x21000000, 2)",
+		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
 		"",
 		"goroutine 7 [chan receive, 50 minutes]:",
-		"main.func·001(0x21000000, 2)",
-		"	/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"main.func·001(0x31000000, 2)",
+		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
 		"",
 		"goroutine 8 [chan receive, 100 minutes]:",
-		"main.func·001(0x21000000, 2)",
-		"	/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"main.func·001(0x41000000, 2)",
+		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
 		"",
 	}
-	c, err := ParseDump(bytes.NewBufferString(strings.Join(data, "\n")), ioutil.Discard, false)
-	if err != nil {
+	s, suffix, err := ScanSnapshot(bytes.NewBufferString(strings.Join(data, "\n")), ioutil.Discard, defaultOpts())
+	if err != io.EOF {
 		t.Fatal(err)
+	}
+	if s == nil {
+		t.Fatal("expected snapshot")
 	}
 	want := []*Bucket{
 		{
@@ -151,7 +171,7 @@ func TestAggregateAggressive(t *testing.T) {
 					Calls: []Call{
 						newCall(
 							"main.func·001",
-							Args{Values: []Arg{{Value: 0x11000000, Name: "*"}, {Value: 2}}},
+							Args{Values: []Arg{{Value: 0x21000000, Name: "*", IsPtr: true}, {Value: 2}}},
 							"/gopath/src/github.com/maruel/panicparse/stack/stack.go",
 							72),
 					},
@@ -161,21 +181,25 @@ func TestAggregateAggressive(t *testing.T) {
 			First: true,
 		},
 	}
-	compareBuckets(t, want, Aggregate(c.Goroutines, AnyPointer))
+	compareBuckets(t, want, s.Aggregate(AnyPointer).Buckets)
+	compareString(t, "", string(suffix))
 }
 
 func BenchmarkAggregate(b *testing.B) {
 	b.ReportAllocs()
-	c, err := ParseDump(bytes.NewReader(internaltest.StaticPanicwebOutput()), ioutil.Discard, true)
-	if err != nil {
+	s, suffix, err := ScanSnapshot(bytes.NewReader(internaltest.StaticPanicwebOutput()), ioutil.Discard, defaultOpts())
+	if err != io.EOF {
 		b.Fatal(err)
 	}
-	if c == nil {
+	if s == nil {
 		b.Fatal("missing context")
+	}
+	if string(suffix) != "" {
+		b.Fatalf("unexpected suffix: %q", string(suffix))
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		buckets := Aggregate(c.Goroutines, AnyPointer)
+		buckets := s.Aggregate(AnyPointer).Buckets
 		if len(buckets) < 5 {
 			b.Fatal("expected more buckets")
 		}

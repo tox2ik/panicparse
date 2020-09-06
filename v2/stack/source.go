@@ -14,103 +14,96 @@ import (
 	"go/parser"
 	"go/token"
 	"io/ioutil"
-	"log"
 	"math"
 	"strings"
 )
 
-// cache is a cache of sources on the file system.
-type cache struct {
+// Private stuff.
+
+// cacheAST is a cache of parsed Go sources.
+type cacheAST struct {
 	files  map[string][]byte
 	parsed map[string]*parsedFile
-}
-
-// Augment processes source files to improve calls to be more descriptive.
-//
-// It modifies goroutines in place. It requires calling ParseDump() with
-// guesspaths set to true to work properly.
-func Augment(goroutines []*Goroutine) {
-	c := &cache{}
-	for _, g := range goroutines {
-		c.augmentGoroutine(g)
-	}
 }
 
 // augmentGoroutine processes source files to improve call to be more
 // descriptive.
 //
 // It modifies the routine.
-func (c *cache) augmentGoroutine(goroutine *Goroutine) {
-	if c.files == nil {
-		c.files = map[string][]byte{}
-	}
-	if c.parsed == nil {
-		c.parsed = map[string]*parsedFile{}
-	}
-	// For each call site, look at the next call and populate it. Then we can
-	// walk back and reformat things.
-	for i := range goroutine.Stack.Calls {
-		c.load(goroutine.Stack.Calls[i].LocalSrcPath)
-	}
-
-	// Once all loaded, we can look at the next call when available.
-	for i := 0; i < len(goroutine.Stack.Calls)-1; i++ {
-		// Get the AST from the previous call and process the call line with it.
-		if f := c.getFuncAST(&goroutine.Stack.Calls[i]); f != nil {
-			processCall(&goroutine.Stack.Calls[i], f)
+func (c *cacheAST) augmentGoroutine(g *Goroutine) error {
+	var err error
+	for i, call := range g.Stack.Calls {
+		// Only load the AST if there's an argument to process.
+		if len(call.Args.Values) == 0 {
+			continue
+		}
+		if err1 := c.loadFile(g.Stack.Calls[i].LocalSrcPath); err1 != nil {
+			//log.Printf("%s", err)
+			err = err1
+		}
+		if p := c.parsed[call.LocalSrcPath]; p != nil {
+			f, err1 := p.getFuncAST(call.Func.Name, call.Line)
+			if err1 != nil {
+				err = err1
+				continue
+			}
+			if f != nil {
+				augmentCall(&g.Stack.Calls[i], f)
+			}
 		}
 	}
+	return err
 }
 
-// Private stuff.
-
-// load loads a source file and parses the AST tree. Failures are ignored.
-func (c *cache) load(fileName string) {
+// loadFile loads a Go source file and parses the AST tree.
+func (c *cacheAST) loadFile(fileName string) error {
 	if fileName == "" {
-		return
+		return nil
 	}
 	if _, ok := c.parsed[fileName]; ok {
-		return
+		return nil
 	}
+	// Do not attempt to parse the same file twice.
 	c.parsed[fileName] = nil
+
 	if !strings.HasSuffix(fileName, ".go") {
 		// Ignore C and assembly.
-		c.files[fileName] = nil
-		return
+		return fmt.Errorf("cannot load non-go file %q", fileName)
 	}
-	//log.Printf("load(%s)", fileName)
-	if _, ok := c.files[fileName]; !ok {
-		var err error
-		if c.files[fileName], err = ioutil.ReadFile(fileName); err != nil {
-			log.Printf("Failed to read %s: %s", fileName, err)
-			c.files[fileName] = nil
-			return
-		}
+	src, err := ioutil.ReadFile(fileName)
+	if err != nil {
+		return err
 	}
+	c.files[fileName] = src
 	fset := token.NewFileSet()
-	src := c.files[fileName]
 	parsed, err := parser.ParseFile(fset, fileName, src, 0)
 	if err != nil {
-		log.Printf("Failed to parse %s: %s", fileName, err)
-		return
+		return fmt.Errorf("failed to parse "+wrap, err)
 	}
-	// Convert the line number into raw file offset.
-	offsets := []int{0, 0}
-	start := 0
-	for l := 1; start < len(src); l++ {
-		start += bytes.IndexByte(src[start:], '\n') + 1
-		offsets = append(offsets, start)
-	}
-	c.parsed[fileName] = &parsedFile{offsets, parsed}
-}
-
-func (c *cache) getFuncAST(call *Call) *ast.FuncDecl {
-	if p := c.parsed[call.LocalSrcPath]; p != nil {
-		return p.getFuncAST(call.Func.Name(), call.Line)
+	c.parsed[fileName] = &parsedFile{
+		lineToByteOffset: lineToByteOffsets(src),
+		parsed:           parsed,
 	}
 	return nil
 }
 
+// lineToByteOffsets extract the line number into raw file offset.
+//
+// Inserts a dummy 0 at offset 0 so line offsets can be 1 based.
+func lineToByteOffsets(src []byte) []int {
+	offsets := []int{0, 0}
+	for offset := 0; offset < len(src); {
+		n := bytes.IndexByte(src[offset:], '\n')
+		if n == -1 {
+			break
+		}
+		offset += n + 1
+		offsets = append(offsets, offset)
+	}
+	return offsets
+}
+
+// parsedFile is a processed Go source file.
 type parsedFile struct {
 	lineToByteOffset []int
 	parsed           *ast.File
@@ -118,14 +111,12 @@ type parsedFile struct {
 
 // getFuncAST gets the callee site function AST representation for the code
 // inside the function f at line l.
-func (p *parsedFile) getFuncAST(f string, l int) (d *ast.FuncDecl) {
+func (p *parsedFile) getFuncAST(f string, l int) (d *ast.FuncDecl, err error) {
 	if len(p.lineToByteOffset) <= l {
 		// The line number in the stack trace line does not exist in the file. That
 		// can only mean that the sources on disk do not match the sources used to
 		// build the binary.
-		// TODO(maruel): This should be surfaced, so that source parsing is
-		// completely ignored.
-		return
+		return nil, fmt.Errorf("line %d is over line count of %d", l, len(p.lineToByteOffset)-1)
 	}
 
 	// Walk the AST to find the lineToByteOffset that fits the line number.
@@ -220,11 +211,11 @@ func extractArgumentsType(f *ast.FuncDecl) ([]string, bool) {
 		}
 	}
 	var types []string
-	extra := false
+	ellipsis := false
 	for _, arg := range append(fields, f.Type.Params.List...) {
-		// Assert that extra is only set on the last item of fields?
+		// Assert that ellipsis is only set on the last item of fields?
 		var t string
-		t, extra = fieldToType(arg)
+		t, ellipsis = fieldToType(arg)
 		mult := len(arg.Names)
 		if mult == 0 {
 			mult = 1
@@ -233,11 +224,11 @@ func extractArgumentsType(f *ast.FuncDecl) ([]string, bool) {
 			types = append(types, t)
 		}
 	}
-	return types, extra
+	return types, ellipsis
 }
 
-// processCall walks the function and populate call accordingly.
-func processCall(call *Call, f *ast.FuncDecl) {
+// augmentCall walks the function and populate call accordingly.
+func augmentCall(call *Call, f *ast.FuncDecl) {
 	values := make([]uint64, len(call.Args.Values))
 	for i := range call.Args.Values {
 		values[i] = call.Args.Values[i].Value

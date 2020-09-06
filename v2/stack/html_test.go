@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maruel/panicparse/v2/internal/internaltest"
+	"github.com/maruel/panicparse/internal/internaltest"
 )
 
 func TestAggregated_ToHTML_2Buckets(t *testing.T) {

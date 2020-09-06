@@ -4,11 +4,11 @@
 
 //go:generate go get golang.org/x/tools/cmd/stringer
 //go:generate stringer -type state
-//go:generate stringer -type Location
 
 package stack
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -16,7 +16,6 @@ import (
 	"io/ioutil"
 	"os"
 	"os/user"
-	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -25,244 +24,132 @@ import (
 	"strings"
 )
 
-// Opts represents options to process the snapshot.
-type Opts struct {
-	// LocalGOROOT is GOROOT with "/" as path separator. No trailing "/". Can be
-	// unset.
-	LocalGOROOT string
-	// LocalGOPATHs is GOPATH with "/" as path separator. No trailing "/". Can be
-	// unset.
-	LocalGOPATHs []string
-
-	// NameArguments tells panicparse to find the recurring pointer values and
-	// give them pseudo 'names'.
-	//
-	// Since the algorithm is O(n²), this can be worth disabling on live servers.
-	NameArguments bool
-
-	// GuessPaths tells panicparse to guess local RemoteGOROOT and GOPATH for
-	// what was found in the snapshot.
-	//
-	// Initializes in Snapshot the following members: RemoteGOROOT,
-	// RemoteGOPATHs, LocalGomoduleRoot and GomodImportPath.
-	//
-	// This is done by scanning the local disk, so be warned of performance
-	// impact.
-	GuessPaths bool
-
-	// AnalyzeSources tells panicparse to processes source files to improve calls
-	// to be more descriptive.
-	//
-	// Requires GuessPaths to be true.
-	AnalyzeSources bool
-
-	// Disallow initialization with unnamed parameters.
-	_ struct{}
-}
-
-// DefaultOpts returns default options to process the snapshot.
-func DefaultOpts() *Opts {
-	p := runtime.GOROOT()
-	if runtime.GOOS == "windows" {
-		p = strings.Replace(p, pathSeparator, "/", -1)
-	}
-	return &Opts{
-		LocalGOROOT:    p,
-		LocalGOPATHs:   getGOPATHs(),
-		NameArguments:  true,
-		GuessPaths:     true,
-		AnalyzeSources: true,
-	}
-}
-
-func (o *Opts) isValid() bool {
-	if !o.GuessPaths && o.AnalyzeSources {
-		return false
-	}
-	if strings.Contains(o.LocalGOROOT, "\\") {
-		return false
-	}
-	for _, p := range o.LocalGOPATHs {
-		if strings.Contains(p, "\\") {
-			return false
-		}
-	}
-	return true
-}
-
-// Snapshot is a parsed runtime.Stack() or race detector dump.
-type Snapshot struct {
+// Context is a parsing context.
+//
+// It contains the deduced GOROOT and GOPATH, if guesspaths is true.
+type Context struct {
 	// Goroutines is the Goroutines found.
 	//
 	// They are in the order that they were printed.
 	Goroutines []*Goroutine
 
-	// LocalGOROOT is copied from Opts.
-	LocalGOROOT string
-	// LocalGOPATHs is copied from Opts.
-	LocalGOPATHs []string
-
-	// The following members are initialized when Opts.GuessPaths is true.
-
-	// RemoteGOROOT is the GOROOT as detected in the traceback, not the on the
-	// host.
+	// GOROOT is the GOROOT as detected in the traceback, not the on the host.
 	//
 	// It can be empty if no root was determined, for example the traceback
 	// contains only non-stdlib source references.
-	RemoteGOROOT string
-	// RemoteGOPATHs is the GOPATH as detected in the traceback, with the value
-	// being the corresponding path mapped to the host if found.
+	//
+	// Empty is guesspaths was false.
+	GOROOT string
+	// GOPATHs is the GOPATH as detected in the traceback, with the value being
+	// the corresponding path mapped to the host.
 	//
 	// It can be empty if only stdlib code is in the traceback or if no local
 	// sources were matched up. In the general case there is only one entry in
 	// the map.
-	RemoteGOPATHs map[string]string
+	//
+	// Nil is guesspaths was false.
+	GOPATHs map[string]string
 
-	// LocalGomods are the root directories containing go.mod or that directly
-	// contained source code as detected in the traceback, with the value being
-	// the corresponding import path found in the go.mod file.
+	// localGomoduleRoot is the root directory containing go.mod. It is
+	// considered to be the primary project containing the main executable. It is
+	// initialized by findRoots().
 	//
-	// Uses "/" as path separator. No trailing "/".
-	//
-	// Because of the "replace" statement in go.mod, there can be multiple root
-	// directories. A file run by "go run" is also considered a go module to (a
-	// certain extent).
-	//
-	// It is initialized by findRoots().
-	//
-	// Unlike GOROOT and GOPATH, it only works with stack traces created in the
-	// local file system, hence "Local" prefix.
-	LocalGomods map[string]string
+	// It only works with stack traces created in the local file system.
+	localGomoduleRoot string
+	// gomodImportPath is set to the relative import path that localGomoduleRoot
+	// represents.
+	gomodImportPath string
 
-	// Disallow initialization with unnamed parameters.
-	_ struct{}
+	// localgoroot is GOROOT with "/" as path separator. No trailing "/".
+	localgoroot string
+	// localgopaths is GOPATH with "/" as path separator. No trailing "/".
+	localgopaths []string
 }
 
-// ScanSnapshot scans the Reader for the output from runtime.Stack() in br.
+// ParseDump processes the output from runtime.Stack().
 //
-// Returns nil *Snapshot if no stack trace was detected.
-//
-// If a Snapshot is returned, you can call the function again to find another
-// trace, or do io.Copy(br, out) to flush the rest of the stream.
-//
-// ParseSnapshot processes the output from runtime.Stack() or the race detector.
-//
-// Returns a nil *Snapshot if no stack trace was detected and SearchSnapshot()
-// was a false positive.
-//
-// Returns io.EOF if all of reader was read.
-//
-// The suffix of the stack trace is returned as []byte.
+// Returns nil *Context if no stack trace was detected.
 //
 // It pipes anything not detected as a panic stack trace from r into out. It
 // assumes there is junk before the actual stack trace. The junk is streamed to
 // out.
-func ScanSnapshot(in io.Reader, prefix io.Writer, opts *Opts) (*Snapshot, []byte, error) {
-	if opts == nil || !opts.isValid() {
-		return nil, nil, errors.New("invalid Opts")
-	}
-	// TODO(maruel): Validate opts.
-	s := scanningState{
-		Snapshot: &Snapshot{
-			LocalGOROOT:  opts.LocalGOROOT,
-			LocalGOPATHs: opts.LocalGOPATHs,
-		},
-		state: looking,
-	}
-	r := reader{rd: in}
-	var err error
-	var suffix []byte
-	for err == nil && s.state != done {
-		var d []byte
-		if d, err = r.readLine(); len(d) != 0 {
-			l, err1 := s.scan(d)
-			if err1 != nil && (err == nil || err == io.EOF) {
-				err = err1
-			}
-			if !l {
-				if s.state != looking {
-					suffix = append([]byte{}, d...)
-					suffix = append(suffix, r.buffered()...)
-					break
-				}
-				if _, err1 = prefix.Write(d); err1 != nil && (err == nil || err == io.EOF) {
-					err = err1
-					break
-				}
-			}
-		}
-	}
-	if s.Goroutines != nil {
-		if opts.NameArguments {
-			nameArguments(s.Goroutines)
-		}
-		if opts.GuessPaths {
-			_ = s.guessPaths()
-		}
-		if opts.AnalyzeSources {
-			_ = s.augment()
-		}
-		return s.Snapshot, suffix, err
-	}
-	return nil, suffix, err
-}
-
-// IsRace returns true if a race detector stack trace was found.
 //
-// Otherwise, it is a normal goroutines snapshot.
-//
-// When a race condition was detected, it is preferable to not call Aggregate().
-func (s *Snapshot) IsRace() bool {
-	return s.Goroutines[0].RaceAddr != 0
-}
-
-func (s *Snapshot) guessPaths() bool {
-	b := s.findRoots() == 0
-	for _, r := range s.Goroutines {
-		// Note that this is important to call it even if
-		// s.RemoteGOROOT == s.LocalGOROOT.
-		b = r.updateLocations(s.RemoteGOROOT, s.LocalGOROOT, s.LocalGomods, s.RemoteGOPATHs) && b
+// If guesspaths is false, no guessing of GOROOT and GOPATH is done, and Call
+// entites do not have LocalSrcPath and IsStdlib filled in. If true, be warned
+// that file presence is done, which means some level of disk I/O.
+func ParseDump(r io.Reader, out io.Writer, guesspaths bool) (*Context, error) {
+	goroutines, err := parseDump(r, out)
+	if len(goroutines) == 0 {
+		return nil, err
 	}
-	return b
-}
-
-// augment processes source files to improve calls to be more descriptive.
-//
-// It modifies goroutines in place. It requires calling guessPaths() to work
-// properly.
-//
-// Returns the last error that occurred while processing files.
-func (s *Snapshot) augment() error {
-	c := cacheAST{
-		files:  map[string][]byte{},
-		parsed: map[string]*parsedFile{},
+	c := &Context{
+		Goroutines:   goroutines,
+		localgoroot:  strings.Replace(runtime.GOROOT(), "\\", "/", -1),
+		localgopaths: getGOPATHs(),
 	}
-	var err error
-	for _, g := range s.Goroutines {
-		if err1 := c.augmentGoroutine(g); err1 != nil {
-			err = err1
+	nameArguments(goroutines)
+	// Corresponding local values on the host for Context.
+	if guesspaths {
+		c.findRoots()
+		for _, r := range c.Goroutines {
+			// Note that this is important to call it even if
+			// c.GOROOT == c.localgoroot.
+			r.updateLocations(c.GOROOT, c.localgoroot, c.localGomoduleRoot, c.gomodImportPath, c.GOPATHs)
 		}
 	}
-	return err
+	return c, err
 }
 
 // Private stuff.
 
-const pathSeparator = string(filepath.Separator)
+func parseDump(r io.Reader, out io.Writer) ([]*Goroutine, error) {
+	scanner := bufio.NewScanner(r)
+	scanner.Split(scanLines)
+	// Do not enable race detection parsing yet, since it cannot be returned in
+	// Context at the moment.
+	s := scanningState{}
+	for scanner.Scan() {
+		line, err := s.scan(scanner.Text())
+		if line != "" {
+			_, _ = io.WriteString(out, line)
+		}
+		if err != nil {
+			return s.goroutines, err
+		}
+	}
+	return s.goroutines, scanner.Err()
+}
 
-var (
-	lockedToThread = []byte("locked to thread")
-	framesElided   = []byte("...additional frames elided...")
-	// gotRaceHeader1, done
-	raceHeaderFooter = []byte("==================")
+// scanLines is similar to bufio.ScanLines except that it:
+//     - doesn't drop '\n'
+//     - doesn't strip '\r'
+//     - returns when the data is bufio.MaxScanTokenSize bytes
+func scanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, data[0 : i+1], nil
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	if len(data) >= bufio.MaxScanTokenSize {
+		// Returns the line even if it is not at EOF nor has a '\n', otherwise the
+		// scanner will return bufio.ErrTooLong which is definitely not what we
+		// want.
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
+const (
+	lockedToThread = "locked to thread"
+	elided         = "...additional frames elided..."
+	// gotRaceHeader1, normal
+	raceHeaderFooter = "=================="
 	// gotRaceHeader2
-	raceHeader = []byte("WARNING: DATA RACE")
-	crlf       = []byte("\r\n")
-	lf         = []byte("\n")
-	commaSpace = []byte(", ")
-	writeCap   = []byte("Write")
-	writeLow   = []byte("write")
-	threeDots  = []byte("...")
+	raceHeader = "WARNING: DATA RACE"
 )
 
 // These are effectively constants.
@@ -325,26 +212,23 @@ var (
 // state is the state of the scan to detect and process a stack trace.
 type state int
 
-// Initial state is looking. Other states are when a stack trace is detected.
+// Initial state is normal. Other states are when a stack trace is detected.
 const (
-	// Haven't found a stack trace yet.
+	// Outside a stack trace.
 	// to: gotRoutineHeader, raceHeader1
-	looking state = iota
-
-	// Done processing a stack trace.
-	done
+	normal state = iota
 
 	// Panic stack trace:
 
 	// Signature: ""
 	// An empty line between goroutines.
 	// from: gotFileCreated, gotFileFunc
-	// to: gotRoutineHeader, done
+	// to: gotRoutineHeader, normal
 	betweenRoutine
 	// Regexp: reRoutineHeader
 	// Signature: "goroutine 1 [running]:"
 	// Goroutine header was found.
-	// from: looking
+	// from: normal
 	// to: gotUnavail, gotFunc
 	gotRoutineHeader
 	// Regexp: reFunc
@@ -363,13 +247,13 @@ const (
 	// Signature: "\t/foo/bar/baz.go:116 +0x35"
 	// File header was found.
 	// from: gotFunc
-	// to: gotFunc, gotCreated, betweenRoutine, done
+	// to: gotFunc, gotCreated, betweenRoutine, normal
 	gotFileFunc
 	// Regexp: reFile
 	// Signature: "\t/foo/bar/baz.go:116 +0x35"
 	// File header was found.
 	// from: gotCreated
-	// to: betweenRoutine, done
+	// to: betweenRoutine, normal
 	gotFileCreated
 	// Regexp: reUnavail
 	// Signature: "goroutine running on other thread; stack unavailable"
@@ -382,183 +266,195 @@ const (
 
 	// Constant: raceHeaderFooter
 	// Signature: "=================="
-	// from: looking
-	// to: done, gotRaceHeader2
+	// from: normal
+	// to: normal, gotRaceHeader2
 	gotRaceHeader1
 	// Constant: raceHeader
 	// Signature: "WARNING: DATA RACE"
 	// from: gotRaceHeader1
-	// to: done, gotRaceOperationHeader
+	// to: normal, gotRaceOperationHeader
 	gotRaceHeader2
 	// Regexp: reRaceOperationHeader, reRacePreviousOperationHeader
 	// Signature: "Read at 0x00c0000e4030 by goroutine 7:"
 	// A race operation was found.
 	// from: gotRaceHeader2
-	// to: done, gotRaceOperationFunc
+	// to: normal, gotRaceOperationFunc
 	gotRaceOperationHeader
 	// Regexp: reFunc
 	// Signature: "  main.panicRace.func1()"
 	// Function that caused the race.
 	// from: gotRaceOperationHeader
-	// to: done, gotRaceOperationFile
+	// to: normal, gotRaceOperationFile
 	gotRaceOperationFunc
 	// Regexp: reFile
 	// Signature: "\t/foo/bar/baz.go:116 +0x35"
 	// File header that caused the race.
 	// from: gotRaceOperationFunc
-	// to: done, betweenRaceOperations, gotRaceOperationFunc
+	// to: normal, betweenRaceOperations, gotRaceOperationFunc
 	gotRaceOperationFile
 	// Signature: ""
 	// Empty line between race operations or just after.
 	// from: gotRaceOperationFile
-	// to: done, gotRaceOperationHeader, gotRaceGoroutineHeader
+	// to: normal, gotRaceOperationHeader, gotRaceGoroutineHeader
 	betweenRaceOperations
 
 	// Regexp: reRaceGoroutine
 	// Signature: "Goroutine 7 (running) created at:"
 	// Goroutine header.
 	// from: betweenRaceOperations, betweenRaceGoroutines
-	// to: done, gotRaceOperationHeader
+	// to: normal, gotRaceOperationHeader
 	gotRaceGoroutineHeader
 	// Regexp: reFunc
 	// Signature: "  main.panicRace.func1()"
 	// Function that caused the race.
 	// from: gotRaceGoroutineHeader
-	// to: done, gotRaceGoroutineFile
+	// to: normal, gotRaceGoroutineFile
 	gotRaceGoroutineFunc
 	// Regexp: reFile
 	// Signature: "\t/foo/bar/baz.go:116 +0x35"
 	// File header that caused the race.
 	// from: gotRaceGoroutineFunc
-	// to: done, betweenRaceGoroutines
+	// to: normal, betweenRaceGoroutines
 	gotRaceGoroutineFile
 	// Signature: ""
 	// Empty line between race stack traces.
 	// from: gotRaceGoroutineFile
-	// to: done, gotRaceGoroutineHeader
+	// to: normal, gotRaceGoroutineHeader
 	betweenRaceGoroutines
 )
+
+// raceOp is one of the detected data race operation as detected by the race
+// detector.
+type raceOp struct {
+	write  bool
+	addr   uint64
+	id     int
+	create Stack
+}
 
 // scanningState is the state of the scan to detect and process a stack trace
 // and stores the traces found.
 type scanningState struct {
-	*Snapshot
-	state          state
-	prefix         []byte
-	goroutineIndex int
+	// Determines if race detection is enabled. Currently false since scan()
+	// would swallow the race detector output, but the data is not part of
+	// Context yet.
+	raceDetectionEnabled bool
+
+	// goroutines contains all the goroutines found.
+	goroutines []*Goroutine
+
+	state       state
+	prefix      string
+	races       map[int]*raceOp
+	goroutineID int
 }
 
 // scan scans one line, updates goroutines and move to the next state.
-//
-// Returns true if the line was processed and thus should not be printed out.
 //
 // TODO(maruel): Handle corrupted stack cases:
 // - missed stack barrier
 // - found next stack barrier at 0x123; expected
 // - runtime: unexpected return pc for FUNC_NAME called from 0x123
-func (s *scanningState) scan(line []byte) (bool, error) {
+func (s *scanningState) scan(line string) (string, error) {
 	/* This is very useful to debug issues in the state machine.
 	defer func() {
 		log.Printf("scan(%q) -> %s", line, s.state)
 	}()
 	//*/
 	var cur *Goroutine
-	if len(s.Goroutines) != 0 {
-		cur = s.Goroutines[len(s.Goroutines)-1]
+	if len(s.goroutines) != 0 {
+		cur = s.goroutines[len(s.goroutines)-1]
 	}
 	trimmed := line
-	if bytes.HasSuffix(line, crlf) {
+	if strings.HasSuffix(line, "\r\n") {
 		trimmed = line[:len(line)-2]
-	} else if bytes.HasSuffix(line, lf) {
+	} else if strings.HasSuffix(line, "\n") {
 		trimmed = line[:len(line)-1]
 	} else {
-		// It's the end of the stream and it's not terminating with EOL character.
-		if s.state == looking || s.state == done {
-			return false, nil
+		// There's two cases:
+		// - It's the end of the stream and it's not terminating with EOL character.
+		// - The line is longer than bufio.MaxScanTokenSize
+		if s.state == normal {
+			return line, nil
 		}
-		// Let it flow. It's possible the last line was trimmed and we still want
-		// to parse it.
+		// Let it flow. It's possible the last line was trimmed and we still want to parse it.
 	}
 
-	if len(trimmed) != 0 && len(s.prefix) != 0 {
-		// This can only be the case if s.state != looking | done or the line is
-		// empty.
-		if !bytes.HasPrefix(trimmed, s.prefix) {
+	if trimmed != "" && s.prefix != "" {
+		// This can only be the case if s.state != normal or the line is empty.
+		if !strings.HasPrefix(trimmed, s.prefix) {
 			prefix := s.prefix
-			s.state = done
-			s.prefix = nil
-			return false, fmt.Errorf("inconsistent indentation: %q, expected %q", trimmed, prefix)
+			s.state = normal
+			s.prefix = ""
+			return "", fmt.Errorf("inconsistent indentation: %q, expected %q", trimmed, prefix)
 		}
 		trimmed = trimmed[len(s.prefix):]
 	}
 
 	switch s.state {
-	case done:
-		return false, nil
-
-	case looking:
+	case normal:
 		// We could look for '^panic:' but this is more risky, there can be a lot
 		// of junk between this and the stack dump.
 		fallthrough
 
 	case betweenRoutine:
 		// Look for a goroutine header.
-		if match := reRoutineHeader.FindSubmatch(trimmed); match != nil {
-			if id, ok := atou(match[2]); ok {
+		if match := reRoutineHeader.FindStringSubmatch(trimmed); match != nil {
+			if id, err := strconv.Atoi(match[2]); err == nil {
 				// See runtime/traceback.go.
 				// "<state>, \d+ minutes, locked to thread"
-				items := bytes.Split(match[3], commaSpace)
+				items := strings.Split(match[3], ", ")
 				sleep := 0
 				locked := false
 				for i := 1; i < len(items); i++ {
-					if bytes.Equal(items[i], lockedToThread) {
+					if items[i] == lockedToThread {
 						locked = true
 						continue
 					}
 					// Look for duration, if any.
-					if match2 := reMinutes.FindSubmatch(items[i]); match2 != nil {
-						sleep, _ = atou(match2[1])
+					if match2 := reMinutes.FindStringSubmatch(items[i]); match2 != nil {
+						sleep, _ = strconv.Atoi(match2[1])
 					}
 				}
 				g := &Goroutine{
 					Signature: Signature{
-						State:    string(items[0]),
+						State:    items[0],
 						SleepMin: sleep,
 						SleepMax: sleep,
 						Locked:   locked,
 					},
 					ID:    id,
-					First: len(s.Goroutines) == 0,
+					First: len(s.goroutines) == 0,
 				}
 				// Increase performance by always allocating 4 goroutines minimally.
-				if s.Goroutines == nil {
-					s.Goroutines = make([]*Goroutine, 0, 4)
+				if s.goroutines == nil {
+					s.goroutines = make([]*Goroutine, 0, 4)
 				}
-				s.Goroutines = append(s.Goroutines, g)
+				s.goroutines = append(s.goroutines, g)
 				s.state = gotRoutineHeader
-				s.prefix = append([]byte{}, match[1]...)
-				return true, nil
+				s.prefix = match[1]
+				return "", nil
 			}
 		}
 		// Switch to race detection mode.
-		if bytes.Equal(trimmed, raceHeaderFooter) {
+		if s.raceDetectionEnabled && trimmed == raceHeaderFooter {
 			// TODO(maruel): We should buffer it in case the next line is not a
 			// WARNING so we can output it back.
 			s.state = gotRaceHeader1
-			return true, nil
+			return "", nil
 		}
-		if s.state != looking {
-			s.state = done
-		}
-		return false, nil
+		// Fallthrough.
+		s.state = normal
+		s.prefix = ""
+		return line, nil
 
 	case gotRoutineHeader:
-		if reUnavail.Match(trimmed) {
+		if reUnavail.MatchString(trimmed) {
 			// Generate a fake stack entry.
-			cur.Stack.Calls = []Call{{RemoteSrcPath: "<unavailable>"}}
+			cur.Stack.Calls = []Call{{SrcPath: "<unavailable>"}}
 			// Next line is expected to be an empty line.
 			s.state = gotUnavail
-			return true, nil
+			return "", nil
 		}
 		c := Call{}
 		if found, err := parseFunc(&c, trimmed); found {
@@ -568,45 +464,39 @@ func (s *scanningState) scan(line []byte) (bool, error) {
 			}
 			cur.Stack.Calls = append(cur.Stack.Calls, c)
 			s.state = gotFunc
-			return err == nil, err
+			return "", err
 		}
-		return false, fmt.Errorf("expected a function after a goroutine header, got: %q", bytes.TrimSpace(trimmed))
+		return "", fmt.Errorf("expected a function after a goroutine header, got: %q", strings.TrimSpace(trimmed))
 
 	case gotFunc:
 		// cur.Stack.Calls is guaranteed to have at least one item.
 		if found, err := parseFile(&cur.Stack.Calls[len(cur.Stack.Calls)-1], trimmed); err != nil {
-			return false, err
+			return "", err
 		} else if !found {
-			return false, fmt.Errorf("expected a file after a function, got: %q", bytes.TrimSpace(trimmed))
+			return "", fmt.Errorf("expected a file after a function, got: %q", strings.TrimSpace(trimmed))
 		}
 		s.state = gotFileFunc
-		return true, nil
+		return "", nil
 
 	case gotCreated:
-		if found, err := parseFile(&cur.CreatedBy.Calls[0], trimmed); err != nil {
-			return false, err
+		if found, err := parseFile(&cur.CreatedBy, trimmed); err != nil {
+			return "", err
 		} else if !found {
-			return false, fmt.Errorf("expected a file after a created line, got: %q", trimmed)
+			return "", fmt.Errorf("expected a file after a created line, got: %q", trimmed)
 		}
 		s.state = gotFileCreated
-		return true, nil
+		return "", nil
 
 	case gotFileFunc:
-		if match := reCreated.FindSubmatch(trimmed); match != nil {
-			cur.CreatedBy.Calls = make([]Call, 1)
-			if err := cur.CreatedBy.Calls[0].Func.Init(string(match[1])); err != nil {
-				cur.CreatedBy.Calls = nil
-				return false, err
-			}
-			// This initializes ImportPath.
-			cur.CreatedBy.Calls[0].init("", 0)
+		if match := reCreated.FindStringSubmatch(trimmed); match != nil {
+			cur.CreatedBy.Func.Raw = match[1]
 			s.state = gotCreated
-			return true, nil
+			return "", nil
 		}
-		if bytes.Equal(trimmed, framesElided) {
+		if elided == trimmed {
 			cur.Stack.Elided = true
 			// TODO(maruel): New state.
-			return true, nil
+			return "", nil
 		}
 		c := Call{}
 		if found, err := parseFunc(&c, trimmed); found {
@@ -616,221 +506,219 @@ func (s *scanningState) scan(line []byte) (bool, error) {
 			}
 			cur.Stack.Calls = append(cur.Stack.Calls, c)
 			s.state = gotFunc
-			return err == nil, err
+			return "", err
 		}
-		if len(trimmed) == 0 {
+		if trimmed == "" {
 			s.state = betweenRoutine
-			return true, nil
+			return "", nil
 		}
-		s.state = done
-		return false, nil
+		// Back to normal state.
+		s.state = normal
+		s.prefix = ""
+		return line, nil
 
 	case gotFileCreated:
-		if len(trimmed) == 0 {
+		if trimmed == "" {
 			s.state = betweenRoutine
-			return true, nil
+			return "", nil
 		}
-		s.state = done
-		return false, nil
+		s.state = normal
+		s.prefix = ""
+		return line, nil
 
 	case gotUnavail:
-		if len(trimmed) == 0 {
+		if trimmed == "" {
 			s.state = betweenRoutine
-			return true, nil
+			return "", nil
 		}
-		if match := reCreated.FindSubmatch(trimmed); match != nil {
-			cur.CreatedBy.Calls = make([]Call, 1)
-			if err := cur.CreatedBy.Calls[0].Func.Init(string(match[1])); err != nil {
-				cur.CreatedBy.Calls = nil
-				return false, err
-			}
+		if match := reCreated.FindStringSubmatch(trimmed); match != nil {
+			cur.CreatedBy.Func.Raw = match[1]
 			s.state = gotCreated
-			return true, nil
+			return "", nil
 		}
-		return false, fmt.Errorf("expected empty line after unavailable stack, got: %q", bytes.TrimSpace(trimmed))
+		return "", fmt.Errorf("expected empty line after unavailable stack, got: %q", strings.TrimSpace(trimmed))
 
 		// Race detector.
 
 	case gotRaceHeader1:
-		if bytes.Equal(trimmed, raceHeader) {
+		if raceHeader == trimmed {
 			// TODO(maruel): We should buffer it in case the next line is not a
 			// WARNING so we can output it back.
 			s.state = gotRaceHeader2
-			return true, nil
+			return "", nil
 		}
-		// TODO(maruel): While this shouldn't error out, it should still force the
-		// output of raceHeaderFooter.
-		s.state = looking
-		s.prefix = nil
-		return false, nil
+		s.state = normal
+		return line, nil
 
 	case gotRaceHeader2:
-		if match := reRaceOperationHeader.FindSubmatch(trimmed); match != nil {
-			w := bytes.Equal(match[1], writeCap)
-			addr, err := strconv.ParseUint(string(match[2]), 0, 64)
+		if match := reRaceOperationHeader.FindStringSubmatch(trimmed); match != nil {
+			w := match[1] == "Write"
+			addr, err := strconv.ParseUint(match[2], 0, 64)
 			if err != nil {
-				return false, fmt.Errorf("failed to parse address on line: %q", bytes.TrimSpace(trimmed))
+				return "", fmt.Errorf("failed to parse address on line: %q", strings.TrimSpace(trimmed))
 			}
-			id, ok := atou(match[3])
-			if !ok {
-				return false, fmt.Errorf("failed to parse goroutine id on line: %q", bytes.TrimSpace(trimmed))
+			id, err := strconv.Atoi(match[3])
+			if err != nil {
+				return "", fmt.Errorf("failed to parse goroutine id on line: %q", strings.TrimSpace(trimmed))
 			}
-			if s.Goroutines != nil {
-				panic("internal failure; expected s.Goroutines to be nil")
+			if s.races != nil {
+				panic("internal failure; expected s.races to be nil")
 			}
-			s.Goroutines = append(make([]*Goroutine, 0, 4), &Goroutine{ID: id, First: true, RaceWrite: w, RaceAddr: addr})
-			s.goroutineIndex = len(s.Goroutines) - 1
+			if s.goroutines != nil {
+				panic("internal failure; expected s.goroutines to be nil")
+			}
+			s.races = make(map[int]*raceOp, 4)
+			s.races[id] = &raceOp{write: w, addr: addr, id: id}
+			s.goroutines = append(make([]*Goroutine, 0, 4), &Goroutine{ID: id, First: true})
+			s.goroutineID = id
 			s.state = gotRaceOperationHeader
-			return true, nil
+			return "", nil
 		}
-		return false, fmt.Errorf("expected race condition, got: %q", bytes.TrimSpace(trimmed))
+		s.state = normal
+		return line, nil
 
 	case gotRaceOperationHeader:
 		c := Call{}
-		if found, err := parseFunc(&c, trimLeftSpace(trimmed)); found {
+		if found, err := parseFunc(&c, strings.TrimLeft(trimmed, "\t ")); found {
 			// Increase performance by always allocating 4 calls minimally.
 			if cur.Stack.Calls == nil {
 				cur.Stack.Calls = make([]Call, 0, 4)
 			}
 			cur.Stack.Calls = append(cur.Stack.Calls, c)
 			s.state = gotRaceOperationFunc
-			return err == nil, err
+			return "", err
 		}
-		return false, fmt.Errorf("expected a function after a race operation, got: %q", trimmed)
+		return "", fmt.Errorf("expected a function after a race operation, got: %q", trimmed)
 
 	case gotRaceOperationFunc:
 		if found, err := parseFile(&cur.Stack.Calls[len(cur.Stack.Calls)-1], trimmed); err != nil {
-			return false, err
+			return "", err
 		} else if !found {
-			return false, fmt.Errorf("expected a file after a race function, got: %q", trimmed)
+			return "", fmt.Errorf("expected a file after a race function, got: %q", trimmed)
 		}
 		s.state = gotRaceOperationFile
-		return true, nil
+		return "", nil
 
 	case gotRaceOperationFile:
-		if len(trimmed) == 0 {
+		if trimmed == "" {
 			s.state = betweenRaceOperations
-			return true, nil
+			return "", nil
 		}
 		c := Call{}
-		if found, err := parseFunc(&c, trimLeftSpace(trimmed)); found {
+		if found, err := parseFunc(&c, strings.TrimLeft(trimmed, "\t ")); found {
 			cur.Stack.Calls = append(cur.Stack.Calls, c)
 			s.state = gotRaceOperationFunc
-			return err == nil, err
+			return "", err
 		}
-		return false, fmt.Errorf("expected an empty line after a race file, got: %q", trimmed)
+		return "", fmt.Errorf("expected an empty line after a race file, got: %q", trimmed)
 
 	case betweenRaceOperations:
 		// Look for other previous race data operations.
-		if match := reRacePreviousOperationHeader.FindSubmatch(trimmed); match != nil {
-			w := bytes.Equal(match[1], writeLow)
-			addr, err := strconv.ParseUint(string(match[2]), 0, 64)
+		if match := reRacePreviousOperationHeader.FindStringSubmatch(trimmed); match != nil {
+			w := match[1] == "write"
+			addr, err := strconv.ParseUint(match[2], 0, 64)
 			if err != nil {
-				return false, fmt.Errorf("failed to parse address on line: %q", bytes.TrimSpace(trimmed))
+				return "", fmt.Errorf("failed to parse address on line: %q", strings.TrimSpace(trimmed))
 			}
-			id, ok := atou(match[3])
-			if !ok {
-				return false, fmt.Errorf("failed to parse goroutine id on line: %q", bytes.TrimSpace(trimmed))
+			id, err := strconv.Atoi(match[3])
+			if err != nil {
+				return "", fmt.Errorf("failed to parse goroutine id on line: %q", strings.TrimSpace(trimmed))
 			}
-			s.Goroutines = append(s.Goroutines, &Goroutine{ID: id, RaceWrite: w, RaceAddr: addr})
-			s.goroutineIndex = len(s.Goroutines) - 1
+			s.goroutineID = id
+			s.races[s.goroutineID] = &raceOp{write: w, addr: addr, id: id}
+			s.goroutines = append(s.goroutines, &Goroutine{ID: id})
 			s.state = gotRaceOperationHeader
-			return true, nil
+			return "", nil
 		}
 		fallthrough
 
 	case betweenRaceGoroutines:
-		if match := reRaceGoroutine.FindSubmatch(trimmed); match != nil {
-			id, ok := atou(match[1])
-			if !ok {
-				return false, fmt.Errorf("failed to parse goroutine id on line: %q", bytes.TrimSpace(trimmed))
+		if match := reRaceGoroutine.FindStringSubmatch(trimmed); match != nil {
+			id, err := strconv.Atoi(match[1])
+			if err != nil {
+				return "", fmt.Errorf("failed to parse goroutine id on line: %q", strings.TrimSpace(trimmed))
 			}
 			found := false
-			for i, g := range s.Goroutines {
+			for _, g := range s.goroutines {
 				if g.ID == id {
-					g.State = string(match[2])
-					s.goroutineIndex = i
+					g.State = match[2]
 					found = true
 					break
 				}
 			}
 			if !found {
-				return false, fmt.Errorf("unexpected goroutine ID on line: %q", bytes.TrimSpace(trimmed))
+				return "", fmt.Errorf("unexpected goroutine ID on line: %q", strings.TrimSpace(trimmed))
 			}
+			s.goroutineID = id
 			s.state = gotRaceGoroutineHeader
-			return true, nil
+			return "", nil
 		}
-		return false, fmt.Errorf("expected an operator or goroutine, got: %q", trimmed)
+		return "", fmt.Errorf("expected an operator or goroutine, got: %q", trimmed)
 
 		// Race stack traces
 
 	case gotRaceGoroutineFunc:
-		c := s.Goroutines[s.goroutineIndex].CreatedBy.Calls
+		c := s.races[s.goroutineID].create.Calls
 		if found, err := parseFile(&c[len(c)-1], trimmed); err != nil {
-			return false, err
+			return "", err
 		} else if !found {
-			return false, fmt.Errorf("expected a file after a race function, got: %q", trimmed)
+			return "", fmt.Errorf("expected a file after a race function, got: %q", trimmed)
 		}
-		// TODO(maruel): Set s.Goroutines[].CreatedBy.
+		// TODO(maruel): Set s.goroutines[].CreatedBy.
 		s.state = gotRaceGoroutineFile
-		return true, nil
+		return "", nil
 
 	case gotRaceGoroutineFile:
-		if len(trimmed) == 0 {
+		if trimmed == "" {
 			s.state = betweenRaceGoroutines
-			return true, nil
+			return "", nil
 		}
-		if bytes.Equal(trimmed, raceHeaderFooter) {
-			s.state = done
-			return true, nil
+		if trimmed == raceHeaderFooter {
+			// Done.
+			s.state = normal
+			return "", nil
 		}
 		fallthrough
 
 	case gotRaceGoroutineHeader:
 		c := Call{}
-		if found, err := parseFunc(&c, trimLeftSpace(trimmed)); found {
-			s.Goroutines[s.goroutineIndex].CreatedBy.Calls = append(s.Goroutines[s.goroutineIndex].CreatedBy.Calls, c)
+		if found, err := parseFunc(&c, strings.TrimLeft(trimmed, "\t ")); found {
+			// TODO(maruel): Set s.goroutines[].CreatedBy.
+			s.races[s.goroutineID].create.Calls = append(s.races[s.goroutineID].create.Calls, c)
 			s.state = gotRaceGoroutineFunc
-			return err == nil, err
+			return "", err
 		}
-		return false, fmt.Errorf("expected a function after a race operation or a race file, got: %q", trimmed)
+		return "", fmt.Errorf("expected a function after a race operation or a race file, got: %q", trimmed)
 
 	default:
-		return false, errors.New("internal error")
+		return "", errors.New("internal error")
 	}
 }
 
 // parseFunc only return an error if also returning a Call.
 //
 // Uses reFunc.
-func parseFunc(c *Call, line []byte) (bool, error) {
-	if match := reFunc.FindSubmatch(line); match != nil {
-		if err := c.Func.Init(string(match[1])); err != nil {
-			return true, err
-		}
-		// It is also done in c.init() but do it here in case of a corrupted trace
-		// for the file section.
-		c.ImportPath = c.Func.ImportPath
-		for _, a := range bytes.Split(match[2], commaSpace) {
-			if bytes.Equal(a, threeDots) {
+func parseFunc(c *Call, line string) (bool, error) {
+	if match := reFunc.FindStringSubmatch(line); match != nil {
+		c.Func.Raw = match[1]
+		for _, a := range strings.Split(match[2], ", ") {
+			if a == "..." {
 				c.Args.Elided = true
 				continue
 			}
-			if len(a) == 0 {
+			if a == "" {
 				// Remaining values were dropped.
 				break
 			}
-			v, err := strconv.ParseUint(string(a), 0, 64)
+			v, err := strconv.ParseUint(a, 0, 64)
 			if err != nil {
-				return true, fmt.Errorf("failed to parse int on line: %q", bytes.TrimSpace(line))
+				return true, fmt.Errorf("failed to parse int on line: %q", strings.TrimSpace(line))
 			}
 			// Increase performance by always allocating 4 values minimally.
 			if c.Args.Values == nil {
 				c.Args.Values = make([]Arg, 0, 4)
 			}
-			// Assume the stack was generated with the same bitness (32 vs 64) than
-			// the code processing it.
-			c.Args.Values = append(c.Args.Values, Arg{Value: v, IsPtr: v > pointerFloor && v < pointerCeiling})
+			c.Args.Values = append(c.Args.Values, Arg{Value: v})
 		}
 		return true, nil
 	}
@@ -840,41 +728,23 @@ func parseFunc(c *Call, line []byte) (bool, error) {
 // parseFile only return an error if also processing a Call.
 //
 // Uses reFile.
-func parseFile(c *Call, line []byte) (bool, error) {
-	if match := reFile.FindSubmatch(line); match != nil {
-		num, ok := atou(match[2])
-		if !ok {
-			return true, fmt.Errorf("failed to parse int on line: %q", bytes.TrimSpace(line))
+func parseFile(c *Call, line string) (bool, error) {
+	if match := reFile.FindStringSubmatch(line); match != nil {
+		num, err := strconv.Atoi(match[2])
+		if err != nil {
+			return true, fmt.Errorf("failed to parse int on line: %q", strings.TrimSpace(line))
 		}
-		c.init(string(match[1]), num)
+		c.SrcPath = match[1]
+		c.Line = num
 		return true, nil
 	}
 	return false, nil
 }
 
-// hasPrefix returns true if any of s is the prefix of p.
-func hasPrefix(p string, s map[string]string) bool {
-	lp := len(p)
-	for prefix := range s {
-		if l := len(prefix); lp > l+1 && p[:l] == prefix && p[l] == '/' {
-			return true
-		}
-	}
-	return false
-}
-
-// hasSrcPrefix returns true if any of s is the prefix of p with /src/ or
-// /pkg/mod/.
+// hasSrcPrefix returns true if any of s is the prefix of p.
 func hasSrcPrefix(p string, s map[string]string) bool {
-	lp := len(p)
-	const src = "/src/"
-	const pkgmod = "/pkg/mod/"
 	for prefix := range s {
-		l := len(prefix)
-		if lp > l+len(src) && p[:l] == prefix && p[l:l+len(src)] == src {
-			return true
-		}
-		if lp > l+len(pkgmod) && p[:l] == prefix && p[l:l+len(pkgmod)] == pkgmod {
+		if strings.HasPrefix(p, prefix+"/src/") || strings.HasPrefix(p, prefix+"/pkg/mod/") {
 			return true
 		}
 	}
@@ -886,7 +756,7 @@ func getFiles(goroutines []*Goroutine) []string {
 	files := map[string]struct{}{}
 	for _, g := range goroutines {
 		for _, c := range g.Stack.Calls {
-			files[c.RemoteSrcPath] = struct{}{}
+			files[c.SrcPath] = struct{}{}
 		}
 	}
 	if len(files) == 0 {
@@ -931,10 +801,11 @@ func isFile(p string) bool {
 	return err == nil && !i.IsDir()
 }
 
-// isRootedIn returns a root if the file split in parts exists under root.
+// rootedIn returns a root if the file split in parts is rooted in root.
 //
 // Uses "/" as path separator.
-func isRootedIn(root string, parts []string) string {
+func rootedIn(root string, parts []string) string {
+	//log.Printf("rootIn(%s, %v)", root, parts)
 	for i := 1; i < len(parts); i++ {
 		suffix := pathJoin(parts[i:]...)
 		if isFile(pathJoin(root, suffix)) {
@@ -947,110 +818,86 @@ func isRootedIn(root string, parts []string) string {
 // reModule find the module line in a go.mod file. It works even on CRLF file.
 var reModule = regexp.MustCompile(`(?m)^module\s+([^\n\r]+)\r?$`)
 
-type gomodCache map[string]struct{}
-
-// isGoModule returns the string to the directory containing a go.mod file, and
-// the go import path it represents, if found.
-func (g *gomodCache) isGoModule(parts []string) (string, string) {
+// isGoModule returns the string to the directory containing a go.mod/go.sum
+// files pair, and the go import path it represents, if found.
+func isGoModule(parts []string) (string, string) {
 	for i := len(parts); i > 0; i-- {
 		prefix := pathJoin(parts[:i]...)
-		// Was already looked up.
-		if _, ok := (*g)[prefix]; ok {
-			break
-		}
-		(*g)[prefix] = struct{}{}
-		p := pathJoin(prefix, "go.mod")
-		if runtime.GOOS == "windows" {
-			p = strings.Replace(p, "/", pathSeparator, -1)
-		}
-		b, err := ioutil.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		if match := reModule.FindSubmatch(b); match != nil {
-			return prefix, string(match[1])
+		if isFile(pathJoin(prefix, "go.sum")) {
+			b, err := ioutil.ReadFile(pathJoin(prefix, "go.mod"))
+			if err != nil {
+				continue
+			}
+			if match := reModule.FindSubmatch(b); match != nil {
+				return prefix, string(match[1])
+			}
 		}
 	}
 	return "", ""
 }
 
-// findRoots sets member RemoteGOROOT, RemoteGOPATHs and LocalGomods.
+// findRoots sets member GOROOT, GOPATHs and localGomoduleRoot.
 //
 // This causes disk I/O as it checks for file presence.
 //
 // Returns the number of missing files.
-func (s *Snapshot) findRoots() int {
-	// TODO(maruel): Reduce memory allocations in this function.
-	s.RemoteGOPATHs = map[string]string{}
-	s.LocalGomods = map[string]string{}
+func (c *Context) findRoots() int {
+	c.GOPATHs = map[string]string{}
 	missing := 0
-	gmc := gomodCache{}
-	for _, f := range getFiles(s.Goroutines) {
+	for _, f := range getFiles(c.Goroutines) {
 		// TODO(maruel): Could a stack dump have mixed cases? I think it's
 		// possible, need to confirm and handle.
 		//log.Printf("  Analyzing %s", f)
 
 		// First checks skip file I/O.
-		if s.RemoteGOROOT != "" && strings.HasPrefix(f, s.RemoteGOROOT+"/src/") {
+		if c.GOROOT != "" && strings.HasPrefix(f, c.GOROOT+"/src/") {
 			// stdlib.
 			continue
 		}
-		if hasSrcPrefix(f, s.RemoteGOPATHs) {
+		if hasSrcPrefix(f, c.GOPATHs) {
 			// $GOPATH/src or go.mod dependency in $GOPATH/pkg/mod.
-			continue
-		}
-		if hasPrefix(f, s.LocalGomods) {
 			continue
 		}
 
 		// At this point, disk will be looked up.
 		parts := splitPath(f)
-		// Initializes RemoteGOROOT.
-		const src = "/src"
-		if s.RemoteGOROOT == "" {
-			if r := isRootedIn(s.LocalGOROOT+src, parts); r != "" {
-				s.RemoteGOROOT = r[:len(r)-len(src)]
-				//log.Printf("Found RemoteGOROOT=%s", s.RemoteGOROOT)
+		if c.GOROOT == "" {
+			if r := rootedIn(c.localgoroot+"/src", parts); r != "" {
+				c.GOROOT = r[:len(r)-4]
+				//log.Printf("Found GOROOT=%s", c.GOROOT)
 				continue
 			}
 		}
-		// Initializes RemoteGOPATHs.
 		found := false
-		for _, l := range s.LocalGOPATHs {
-			if r := isRootedIn(l+src, parts); r != "" {
-				//log.Printf("Found RemoteGOPATHs[%s] = %s", r[:len(r)-len(src)], l)
-				s.RemoteGOPATHs[r[:len(r)-len(src)]] = l
+		for _, l := range c.localgopaths {
+			if r := rootedIn(l+"/src", parts); r != "" {
+				//log.Printf("Found GOPATH=%s", r[:len(r)-4])
+				c.GOPATHs[r[:len(r)-4]] = l
 				found = true
 				break
 			}
-			const pkgmod = "/pkg/mod"
-			if r := isRootedIn(l+pkgmod, parts); r != "" {
-				//log.Printf("Found RemoteGOPATHs[%s] = %s", r[:len(r)-len(pkgmod)], l)
-				s.RemoteGOPATHs[r[:len(r)-len(pkgmod)]] = l
+			if r := rootedIn(l+"/pkg/mod", parts); r != "" {
+				//log.Printf("Found GOPATH=%s", r[:len(r)-8])
+				c.GOPATHs[r[:len(r)-8]] = l
 				found = true
 				break
 			}
 		}
-		if found {
-			continue
-		}
-		// Initializes localGomods.
-		if len(parts) > 1 {
-			// Search upward looking for a go.mod.
-			if root, path := gmc.isGoModule(parts[:len(parts)-1]); root != "" {
-				s.LocalGomods[root] = path
+		// If the source is not found, it's probably a go module.
+		if !found {
+			if c.localGomoduleRoot == "" && len(parts) > 1 {
+				// Search upward looking for a go.mod/go.sum pair.
+				c.localGomoduleRoot, c.gomodImportPath = isGoModule(parts[:len(parts)-1])
+			}
+			if c.localGomoduleRoot != "" && strings.HasPrefix(f, c.localGomoduleRoot+"/") {
 				continue
 			}
 		}
-		if isFile(f) {
-			// Assumes "go run" was used, thus is package main. Still consider it a
-			// "go module" but in the weakest sense.
-			s.LocalGomods[path.Dir(f)] = "main"
-			continue
+		if !found {
+			// If the source is not found, just too bad.
+			//log.Printf("Failed to find locally: %s", f)
+			missing++
 		}
-		// If the source is not found, just too bad.
-		//log.Printf("Failed to find locally: %s", f)
-		missing++
 	}
 	return missing
 }
@@ -1062,9 +909,7 @@ func getGOPATHs() []string {
 		for _, v := range filepath.SplitList(gp) {
 			// Disallow non-absolute paths?
 			if v != "" {
-				if runtime.GOOS == "windows" {
-					v = strings.Replace(v, pathSeparator, "/", -1)
-				}
+				v = strings.Replace(v, "\\", "/", -1)
 				// Trim trailing "/".
 				if l := len(v); v[l-1] == '/' {
 					v = v[:l-1]
@@ -1084,43 +929,7 @@ func getGOPATHs() []string {
 		} else {
 			homeDir = u.HomeDir
 		}
-		p := homeDir + "/go"
-		if runtime.GOOS == "windows" {
-			p = strings.Replace(p, pathSeparator, "/", -1)
-		}
-		out = []string{p}
+		out = []string{strings.Replace(homeDir+"/go", "\\", "/", -1)}
 	}
 	return out
-}
-
-// atou is a fast Atoi() function.
-//
-// It is a very simplified version of strconv.Atoi() that it never go into the
-// slow path and it operates on []byte instead of string so it doesn't do
-// memory allocation. It will fail on edge cases like prefix of zeros and other
-// things that the panic stack trace generator never outputs.
-//
-// It doesn't handle negative values.
-func atou(s []byte) (int, bool) {
-	if l := len(s); strconv.IntSize == 32 && (0 < l && l < 10) || strconv.IntSize == 64 && (0 < l && l < 19) {
-		n := 0
-		for _, ch := range s {
-			if ch -= '0'; ch > 9 {
-				return 0, false
-			}
-			n = n*10 + int(ch)
-		}
-		return n, true
-	}
-	return 0, false
-}
-
-// trimLeftSpace is the faster equivalent of bytes.TrimLeft(s, "\t ").
-func trimLeftSpace(s []byte) []byte {
-	for i, ch := range s {
-		if ch != '\t' && ch != ' ' {
-			return s[i:]
-		}
-	}
-	return nil
 }

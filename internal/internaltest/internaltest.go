@@ -185,11 +185,7 @@ func build(tool string, race bool) string {
 	if runtime.GOOS == "windows" {
 		p += ".exe"
 	}
-	path := "github.com/maruel/panicparse/cmd/"
-	if IsUsingModules() {
-		path = "github.com/maruel/panicparse/v2/cmd/"
-	}
-	if err := Compile(path+tool, p, "", true, race); err != nil {
+	if err := Compile("github.com/maruel/panicparse/cmd/"+tool, p, "", true, race); err != nil {
 		_, _ = os.Stderr.WriteString(err.Error())
 		return ""
 	}

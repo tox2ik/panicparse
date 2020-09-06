@@ -9,134 +9,111 @@
 package stack
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
 
-// Func is a function call as read in a goroutine stack trace.
+// Func is a function call in a goroutine stack trace.
+type Func struct {
+	// Complete is the complete reference. It can be ambiguous in case where a
+	// path contains dots.
+	Complete string
+	// ImportPath is the directory name for this function reference, or "main" if
+	// it was in package main. The package name may not match.
+	ImportPath string
+	// DirName is the directory name containing the package in which the function
+	// is. Normally this matches the package name, but sometimes there's smartass
+	// folks that use a different directory name than the package name.
+	DirName string
+	// Name is the function name or fully quality method name.
+	Name string
+	// IsExported is true if the function is exported.
+	IsExported bool
+	// IsPkgMain is true if it is in the main package.
+	IsPkgMain bool
+
+	// Disallow initialization with unnamed parameters.
+	_ struct{}
+}
+
+// Init parses the raw function call line from a goroutine stack trace.
 //
 // Go stack traces print a mangled function call, this wrapper unmangle the
 // string before printing and adds other filtering methods.
 //
 // The main caveat is that for calls in package main, the package import URL is
 // left out.
-type Func struct {
-	Raw string
+func (f *Func) Init(raw string) error {
+	// Format can be:
+	//  - gopkg.in/yaml%2ev2.(*Struct).Method  (handling dots is tricky)
+	//  - main.func·001  (go statements)
+	//  - foo  (C code)
+	//
+	// The function is optimized to reduce its memory usage.
+	endPkg := 0
+	if lastSlash := strings.LastIndexByte(raw, '/'); lastSlash != -1 {
+		// Cut the path elements.
+		r := strings.IndexByte(raw[lastSlash+1:], '.')
+		if r == -1 {
+			return errors.New("bad function reference: expected to have at least one dot")
+		}
+		endPkg = lastSlash + r + 1
+	} else {
+		// It's fine if there's no dot, it happens in C code in go1.4 and lower.
+		endPkg = strings.IndexByte(raw, '.')
+	}
+	// Only the path part is escaped.
+	var err error
+	if f.Complete, err = url.QueryUnescape(raw); err != nil {
+		return fmt.Errorf("bad function reference: "+wrap, err)
+	}
+	// Update the index in the unescaped string.
+	endPkg += len(f.Complete) - len(raw)
+	if endPkg != -1 {
+		f.ImportPath = f.Complete[:endPkg]
+	}
+	f.Name = f.Complete[endPkg+1:]
+	f.DirName = f.ImportPath
+	if i := strings.LastIndexByte(f.DirName, '/'); i != -1 {
+		f.DirName = f.DirName[i+1:]
+	}
+	if f.ImportPath == "main" {
+		f.IsPkgMain = true
+		// Consider main.main to be exported.
+		if f.Name == "main" {
+			f.IsExported = true
+		}
+	} else {
+		parts := strings.Split(f.Name, ".")
+		r, _ := utf8.DecodeRuneInString(parts[len(parts)-1])
+		f.IsExported = unicode.ToUpper(r) == r
+	}
+	return nil
 }
 
-// String return the fully qualified package import path dot function/method
-// name.
-//
-// It returns the unmangled form of .Raw.
+// String returns Complete.
 func (f *Func) String() string {
-	s, _ := url.QueryUnescape(f.Raw)
-	return s
-}
-
-// Name returns the function name.
-//
-// Methods are fully qualified, including the struct type.
-func (f *Func) Name() string {
-	// This works even on Windows as filepath.Base() splits also on "/".
-	// TODO(maruel): This code will fail on a source file with a dot in its name.
-	parts := strings.SplitN(filepath.Base(f.Raw), ".", 2)
-	if len(parts) == 1 {
-		return parts[0]
-	}
-	return parts[1]
-}
-
-// importPath returns the fully qualified package import URL as a guess from
-// the function signature.
-//
-// Not exported because Call.ImportPath() should be called instead, as this
-// function can't return the import path for package main.
-func (f *Func) importPath() string {
-	i := strings.LastIndexByte(f.Raw, '/')
-	if i == -1 {
-		return ""
-	}
-	j := strings.IndexByte(f.Raw[i:], '.')
-	if j == -1 {
-		return ""
-	}
-	s, _ := url.QueryUnescape(f.Raw[:i+j])
-	return s
-}
-
-// PkgName returns the guessed package name for this function reference.
-//
-// Since the package name can differ from the package import path, the result
-// is incorrect when there's a mismatch between the directory name containing
-// the package and the package name.
-func (f *Func) PkgName() string {
-	parts := strings.SplitN(filepath.Base(f.Raw), ".", 2)
-	if len(parts) == 1 {
-		return ""
-	}
-	s, _ := url.QueryUnescape(parts[0])
-	return s
-}
-
-// PkgDotName returns "<package>.<func>" format.
-//
-// Since the package name can differ from the package import path, the result
-// is incorrect when there's a mismatch between the directory name containing
-// the package and the package name.
-func (f *Func) PkgDotName() string {
-	parts := strings.SplitN(filepath.Base(f.Raw), ".", 2)
-	s, _ := url.QueryUnescape(parts[0])
-	if len(parts) == 1 {
-		return parts[0]
-	}
-	if s != "" || parts[1] != "" {
-		return s + "." + parts[1]
-	}
-	return ""
-}
-
-// IsExported returns true if the function is exported.
-func (f *Func) IsExported() bool {
-	name := f.Name()
-	// TODO(maruel): Something like serverHandler.ServeHTTP in package net/host
-	// should not be considered exported. We need something similar to the
-	// decoding done in symbol() in internal/htmlstack.
-	parts := strings.Split(name, ".")
-	r, _ := utf8.DecodeRuneInString(parts[len(parts)-1])
-	if unicode.ToUpper(r) == r {
-		return true
-	}
-	return f.PkgName() == "main" && name == "main"
+	return f.Complete
 }
 
 // Arg is an argument on a Call.
 type Arg struct {
-	Value uint64 // Value is the raw value as found in the stack trace
-	Name  string // Name is a pseudo name given to the argument
-}
+	// Value is the raw value as found in the stack trace
+	Value uint64
+	// Name is a pseudo name given to the argument
+	Name string
+	// IsPtr is true if we guess it's a pointer. It's only a guess, it can be
+	// easily be confused by a bitmask.
+	IsPtr bool
 
-const (
-	// Assumes all values are above 4MiB and positive are pointers; assuming that
-	// above half the memory is kernel memory.
-	//
-	// This is not always true but this should be good enough to help
-	// implementing AnyPointer.
-	pointerFloor = 4 * 1024 * 1024
-	// Assume the stack was generated with the same bitness (32 vs 64) than the
-	// code processing it.
-	pointerCeiling = uint64((^uint(0)) >> 1)
-)
-
-// IsPtr returns true if we guess it's a pointer. It's only a guess, it can be
-// easily be confused by a bitmask.
-func (a *Arg) IsPtr() bool {
-	return a.Value > pointerFloor && a.Value < pointerCeiling
+	// Disallow initialization with unnamed parameters.
+	_ struct{}
 }
 
 const zeroToNine = "0123456789"
@@ -152,6 +129,19 @@ func (a *Arg) String() string {
 	return fmt.Sprintf("0x%x", a.Value)
 }
 
+const (
+	// With go1.15 on Windows, the pointer floor can be below 1MiB (!)
+	// Assumes all values are above 512KiB and positive are pointers; assuming
+	// that above half the memory is kernel memory.
+	//
+	// This is not always true but this should be good enough to help
+	// implementing AnyPointer.
+	pointerFloor = 512 * 1024
+	// Assume the stack was generated with the same bitness (32 vs 64) than the
+	// code processing it.
+	pointerCeiling = uint64((^uint(0)) >> 1)
+)
+
 // similar returns true if the two Arg are equal or almost but not quite equal.
 func (a *Arg) similar(r *Arg, similar Similarity) bool {
 	switch similar {
@@ -160,10 +150,10 @@ func (a *Arg) similar(r *Arg, similar Similarity) bool {
 	case AnyValue:
 		return true
 	case AnyPointer:
-		if a.IsPtr() != r.IsPtr() {
+		if a.IsPtr != r.IsPtr {
 			return false
 		}
-		return a.IsPtr() || a.Value == r.Value
+		return a.IsPtr || a.Value == r.Value
 	default:
 		return false
 	}
@@ -179,6 +169,9 @@ type Args struct {
 	Processed []string
 	// Elided when set means there was a trailing ", ...".
 	Elided bool
+
+	// Disallow initialization with unnamed parameters.
+	_ struct{}
 }
 
 func (a *Args) String() string {
@@ -234,6 +227,7 @@ func (a *Args) merge(r *Args) Args {
 		if l != r.Values[i] {
 			out.Values[i].Name = "*"
 			out.Values[i].Value = l.Value
+			out.Values[i].IsPtr = l.IsPtr
 		} else {
 			out.Values[i] = l
 		}
@@ -241,156 +235,197 @@ func (a *Args) merge(r *Args) Args {
 	return out
 }
 
+// Location is the source location, if determined.
+type Location int
+
+const (
+	// LocationUnknown is the default value when Opts.GuessPaths was false.
+	LocationUnknown Location = iota
+	// GoMod is a go module, it is outside $GOPATH and is inside a directory
+	// containing a go.mod file. This is considered a local copy.
+	GoMod
+	// GOPATH is in $GOPATH/src. This is either a dependency fetched via
+	// GO111MODULE=off or intentionally fetched this way. There is no guaranteed
+	// that the local copy is pristine.
+	GOPATH
+	// GoPkg is in $GOPATH/pkg/mod. This is a dependency fetched via go module.
+	// It is considered to be an unmodified external dependency.
+	GoPkg
+	// Stdlib is when it is a Go standard library function. This includes the 'go
+	// test' generated main executable.
+	Stdlib
+
+	lastLocation
+)
+
 // Call is an item in the stack trace.
+//
+// All paths in this struct are in POSIX format, using "/" as path separator.
 type Call struct {
-	// SrcPath is the full path name of the source file as seen in the trace.
-	SrcPath string
-	// LocalSrcPath is the full path name of the source file as seen in the host,
-	// if found.
-	LocalSrcPath string
-	// Line is the line number.
-	Line int
+	// The following are initialized on the first line of the call stack.
+
 	// Func is the fully qualified function name (encoded).
 	Func Func
 	// Args is the call arguments.
 	Args Args
 
-	// The following are only set if guesspaths is set to true in ParseDump().
-	// IsStdlib is true if it is a Go standard library function. This includes
-	// the 'go test' generated main executable.
-	IsStdlib bool
-	// RelSrcPath is the relative path to GOROOT or GOPATH. Only set when
-	// Augment() is called.
+	// The following are initialized on the second line of the call stack.
+
+	// RemoteSrcPath is the full path name of the source file as seen in the
+	// trace.
+	RemoteSrcPath string
+	// Line is the line number.
+	Line int
+	// SrcName is the base file name of the source file.
+	SrcName string
+	// DirSrc is one directory plus the file name of the source file. It is a
+	// subset of RemoteSrcPath.
+	DirSrc string
+
+	// The following are only set if Opts.GuessPaths was set.
+
+	// LocalSrcPath is the full path name of the source file as seen in the host,
+	// if found.
+	LocalSrcPath string
+	// RelSrcPath is the relative path to GOROOT, GOPATH or LocalGoMods.
 	RelSrcPath string
+	// ImportPath is the fully qualified import path as found on disk (when
+	// Opts.GuessPaths was set). Defaults to Func.ImportPath otherwise.
+	//
+	// In the case of package "main", it returns the underlying path to the main
+	// package instead of "main" if Opts.GuessPaths was set.
+	ImportPath string
+	// Location is the source location, if determined.
+	Location Location
+
+	// Disallow initialization with unnamed parameters.
+	_ struct{}
 }
 
-// equal returns true only if both calls are exactly equal.
-func (c *Call) equal(r *Call) bool {
-	return c.SrcPath == r.SrcPath && c.Line == r.Line && c.Func == r.Func && c.Args.equal(&r.Args)
-}
-
-// similar returns true if the two Call are equal or almost but not quite
-// equal.
-func (c *Call) similar(r *Call, similar Similarity) bool {
-	return c.SrcPath == r.SrcPath && c.Line == r.Line && c.Func == r.Func && c.Args.similar(&r.Args, similar)
-}
-
-// merge merges two similar Call, zapping out differences.
-func (c *Call) merge(r *Call) Call {
-	return Call{
-		SrcPath:      c.SrcPath,
-		LocalSrcPath: c.LocalSrcPath,
-		Line:         c.Line,
-		Func:         c.Func,
-		Args:         c.Args.merge(&r.Args),
-		IsStdlib:     c.IsStdlib,
-		RelSrcPath:   c.RelSrcPath,
-	}
-}
-
-// SrcName returns the base file name of the source file.
-func (c *Call) SrcName() string {
-	return filepath.Base(c.SrcPath)
-}
-
-// SrcLine returns "source.go:line", including only the base file name.
+// Init initializes RemoteSrcPath, SrcName, DirName and Line.
 //
-// Deprecated: Format it yourself, will be removed in v2.
-func (c *Call) SrcLine() string {
-	return fmt.Sprintf("%s:%d", c.SrcName(), c.Line)
-}
-
-// FullSrcLine returns "/path/to/source.go:line".
+// For test main, it initializes Location only with Stdlib.
 //
-// This file path is mutated to look like the local path.
-//
-// Deprecated: Format it yourself, will be removed in v2.
-func (c *Call) FullSrcLine() string {
-	return fmt.Sprintf("%s:%d", c.SrcPath, c.Line)
-}
-
-// PkgSrc returns one directory plus the file name of the source file.
-//
-// Since the package name can differ from the package import path, the result
-// is incorrect when there's a mismatch between the directory name containing
-// the package and the package name.
-func (c *Call) PkgSrc() string {
-	return pathJoin(filepath.Base(filepath.Dir(c.SrcPath)), c.SrcName())
-}
-
-// IsPkgMain returns true if it is in the main package.
-func (c *Call) IsPkgMain() bool {
-	return c.Func.PkgName() == "main"
-}
-
-// ImportPath returns the fully qualified package import path.
-//
-// In the case of package "main", it returns the underlying path to the main
-// package instead of "main" if guesspaths=true was specified to ParseDump().
-func (c *Call) ImportPath() string {
-	// In case guesspath=true was passed to ParseDump().
-	if c.RelSrcPath != "" {
-		if i := strings.LastIndexByte(c.RelSrcPath, '/'); i != -1 {
-			return c.RelSrcPath[:i]
+// It does its best educated guess for ImportPath.
+func (c *Call) init(srcPath string, line int) {
+	c.Line = line
+	if srcPath != "" {
+		c.RemoteSrcPath = srcPath
+		if i := strings.LastIndexByte(c.RemoteSrcPath, '/'); i != -1 {
+			c.SrcName = c.RemoteSrcPath[i+1:]
+			if i = strings.LastIndexByte(c.RemoteSrcPath[:i], '/'); i != -1 {
+				c.DirSrc = c.RemoteSrcPath[i+1:]
+			}
+		}
+		if c.DirSrc == testMainSrc {
+			// Consider _test/_testmain.go as stdlib since it's injected by "go test".
+			c.Location = Stdlib
 		}
 	}
-	// Fallback to best effort.
-	if !c.IsPkgMain() {
-		return c.Func.importPath()
-	}
-	// In package main, it can only work well if guesspath=true was used. Return
-	// an empty string instead of garbagge.
-	return ""
+	c.ImportPath = c.Func.ImportPath
 }
 
 const testMainSrc = "_test" + string(os.PathSeparator) + "_testmain.go"
 
-// updateLocations initializes LocalSrcPath, RelSrcPath and IsStdlib.
+// updateLocations initializes LocalSrcPath, RelSrcPath, Location and ImportPath.
 //
 // goroot, localgoroot, localgomod, gomodImportPath and gopaths are expected to
 // be in "/" format even on Windows. They must not have a trailing "/".
-func (c *Call) updateLocations(goroot, localgoroot, localgomod, gomodImportPath string, gopaths map[string]string) {
-	if c.SrcPath == "" {
-		return
+//
+// Returns true if a match was found.
+func (c *Call) updateLocations(goroot, localgoroot string, localgomods, gopaths map[string]string) bool {
+	// TODO(maruel): Reduce memory allocations.
+	if c.RemoteSrcPath == "" {
+		return false
 	}
 	// Check GOROOT first.
 	if goroot != "" {
-		if prefix := goroot + "/src/"; strings.HasPrefix(c.SrcPath, prefix) {
+		if prefix := goroot + "/src/"; strings.HasPrefix(c.RemoteSrcPath, prefix) {
 			// Replace remote GOROOT with local GOROOT.
-			c.RelSrcPath = c.SrcPath[len(prefix):]
+			c.RelSrcPath = c.RemoteSrcPath[len(prefix):]
 			c.LocalSrcPath = pathJoin(localgoroot, "src", c.RelSrcPath)
-			c.IsStdlib = true
-			goto done
+			if i := strings.LastIndexByte(c.RelSrcPath, '/'); i != -1 {
+				c.ImportPath = c.RelSrcPath[:i]
+			}
+			if c.Location == LocationUnknown {
+				c.Location = Stdlib
+			}
+			return true
 		}
 	}
 	// Check GOPATH.
 	// TODO(maruel): Sort for deterministic behavior?
 	for prefix, dest := range gopaths {
-		if p := prefix + "/src/"; strings.HasPrefix(c.SrcPath, p) {
-			c.RelSrcPath = c.SrcPath[len(p):]
+		if p := prefix + "/src/"; strings.HasPrefix(c.RemoteSrcPath, p) {
+			c.RelSrcPath = c.RemoteSrcPath[len(p):]
 			c.LocalSrcPath = pathJoin(dest, "src", c.RelSrcPath)
-			goto done
+			if i := strings.LastIndexByte(c.RelSrcPath, '/'); i != -1 {
+				c.ImportPath = c.RelSrcPath[:i]
+			}
+			if c.Location == LocationUnknown {
+				c.Location = GOPATH
+			}
+			return true
 		}
 		// For modules, the path has to be altered, as it contains the version.
-		if p := prefix + "/pkg/mod/"; strings.HasPrefix(c.SrcPath, p) {
-			c.RelSrcPath = c.SrcPath[len(p):]
+		if p := prefix + "/pkg/mod/"; strings.HasPrefix(c.RemoteSrcPath, p) {
+			c.RelSrcPath = c.RemoteSrcPath[len(p):]
 			c.LocalSrcPath = pathJoin(dest, "pkg/mod", c.RelSrcPath)
-			goto done
+			if i := strings.LastIndexByte(c.RelSrcPath, '/'); i != -1 {
+				c.ImportPath = c.RelSrcPath[:i]
+			}
+			if c.Location == LocationUnknown {
+				c.Location = GoPkg
+			}
+			return true
 		}
 	}
+	// Check Go modules.
 	// Go module path detection only works with stack traces created on the local
 	// file system.
-	if localgomod != "" {
-		if prefix := localgomod + "/"; strings.HasPrefix(c.SrcPath, prefix) {
-			c.RelSrcPath = gomodImportPath + "/" + c.SrcPath[len(prefix):]
-			c.LocalSrcPath = c.SrcPath
-			goto done
+	for prefix, pkg := range localgomods {
+		if strings.HasPrefix(c.RemoteSrcPath, prefix+"/") {
+			c.RelSrcPath = c.RemoteSrcPath[len(prefix)+1:]
+			c.LocalSrcPath = c.RemoteSrcPath
+			if i := strings.LastIndexByte(c.RelSrcPath, '/'); i != -1 {
+				c.ImportPath = pkg + "/" + c.RelSrcPath[:i]
+			} else {
+				c.ImportPath = pkg
+			}
+			if c.Location == LocationUnknown {
+				c.Location = GoMod
+			}
+			return true
 		}
 	}
-done:
-	if !c.IsStdlib {
-		// Consider _test/_testmain.go as stdlib since it's injected by "go test".
-		c.IsStdlib = c.PkgSrc() == testMainSrc
+	// Maybe the path is just absolute and exists?
+	return false
+}
+
+// equal returns true only if both calls are exactly equal.
+func (c *Call) equal(r *Call) bool {
+	return c.Line == r.Line && c.Func.Complete == r.Func.Complete && c.RemoteSrcPath == r.RemoteSrcPath && c.Args.equal(&r.Args)
+}
+
+// similar returns true if the two Call are equal or almost but not quite
+// equal.
+func (c *Call) similar(r *Call, similar Similarity) bool {
+	return c.Line == r.Line && c.Func.Complete == r.Func.Complete && c.RemoteSrcPath == r.RemoteSrcPath && c.Args.similar(&r.Args, similar)
+}
+
+// merge merges two similar Call, zapping out differences.
+func (c *Call) merge(r *Call) Call {
+	return Call{
+		Func:          c.Func,
+		Args:          c.Args.merge(&r.Args),
+		RemoteSrcPath: c.RemoteSrcPath,
+		Line:          c.Line,
+		SrcName:       c.SrcName,
+		DirSrc:        c.DirSrc,
+		LocalSrcPath:  c.LocalSrcPath,
+		RelSrcPath:    c.RelSrcPath,
+		ImportPath:    c.ImportPath,
+		Location:      c.Location,
 	}
 }
 
@@ -402,6 +437,9 @@ type Stack struct {
 	// Elided is set when there's >100 items in Stack, currently hardcoded in
 	// package runtime.
 	Elided bool
+
+	// Disallow initialization with unnamed parameters.
+	_ struct{}
 }
 
 // equal returns true on if both call stacks are exactly equal.
@@ -451,65 +489,71 @@ func (s *Stack) merge(r *Stack) *Stack {
 // Inversely, a Stack with only public functions is 'more' so it is at the
 // bottom.
 func (s *Stack) less(r *Stack) bool {
-	lStdlib := 0
-	lPrivate := 0
+	lLoc := [lastLocation]int{}
+	rLoc := [lastLocation]int{}
+	lMain := 0
+	rMain := 0
 	for _, c := range s.Calls {
-		if c.IsStdlib {
-			lStdlib++
-		} else {
-			lPrivate++
+		lLoc[c.Location]++
+		if c.Func.IsPkgMain {
+			lMain++
 		}
 	}
-	rStdlib := 0
-	rPrivate := 0
 	for _, s := range r.Calls {
-		if s.IsStdlib {
-			rStdlib++
-		} else {
-			rPrivate++
+		rLoc[s.Location]++
+		if s.Func.IsPkgMain {
+			rMain++
 		}
 	}
-	if lPrivate > rPrivate {
-		return true
-	}
-	if lPrivate < rPrivate {
-		return false
-	}
-	if lStdlib > rStdlib {
-		return false
-	}
-	if lStdlib < rStdlib {
-		return true
+	for i := 1; i < int(lastLocation); i++ {
+		if lMain > rMain {
+			return true
+		}
+		if lMain < rMain {
+			return false
+		}
+		if lLoc[i] > rLoc[i] {
+			return true
+		}
+		if lLoc[i] < rLoc[i] {
+			return false
+		}
 	}
 
 	// Stack lengths are the same.
 	for x := range s.Calls {
-		if s.Calls[x].Func.Raw < r.Calls[x].Func.Raw {
+		if s.Calls[x].Func.Complete < r.Calls[x].Func.Complete {
 			return true
 		}
-		if s.Calls[x].Func.Raw > r.Calls[x].Func.Raw {
+		if s.Calls[x].Func.Complete > r.Calls[x].Func.Complete {
+			return false
+		}
+		if s.Calls[x].DirSrc < r.Calls[x].DirSrc {
 			return true
 		}
-		if s.Calls[x].PkgSrc() < r.Calls[x].PkgSrc() {
-			return true
-		}
-		if s.Calls[x].PkgSrc() > r.Calls[x].PkgSrc() {
-			return true
+		if s.Calls[x].DirSrc > r.Calls[x].DirSrc {
+			return false
 		}
 		if s.Calls[x].Line < r.Calls[x].Line {
 			return true
 		}
 		if s.Calls[x].Line > r.Calls[x].Line {
-			return true
+			return false
 		}
 	}
+	// Stacks are the same.
 	return false
 }
 
-func (s *Stack) updateLocations(goroot, localgoroot, localgomod, gomodImportPath string, gopaths map[string]string) {
+// updateLocations calls updateLocations on each call frame and returns true if
+// they were all resolved.
+func (s *Stack) updateLocations(goroot, localgoroot string, localgomods, gopaths map[string]string) bool {
+	// If there were none, it was "resolved".
+	r := true
 	for i := range s.Calls {
-		s.Calls[i].updateLocations(goroot, localgoroot, localgomod, gomodImportPath, gopaths)
+		r = s.Calls[i].updateLocations(goroot, localgoroot, localgomods, gopaths) && r
 	}
+	return r
 }
 
 // Signature represents the signature of one or multiple goroutines.
@@ -536,17 +580,33 @@ type Signature struct {
 	// Scan states:
 	//    - scan, scanrunnable, scanrunning, scansyscall, scanwaiting, scandead,
 	//      scanenqueue
+	//
+	// When running under the race detector, the values are 'running' or
+	// 'finished'.
 	State string
-	// Createdby is the goroutine which created this one, if applicable.
-	CreatedBy Call
+	// CreatedBy is the call stack that created this goroutine, if applicable.
+	//
+	// Normally, the stack is a single Call.
+	//
+	// When the race detector is enabled, a full stack snapshot is available.
+	CreatedBy Stack
 	// SleepMin is the wait time in minutes, if applicable.
+	//
+	// Not set when running under the race detector.
 	SleepMin int
 	// SleepMax is the wait time in minutes, if applicable.
+	//
+	// Not set when running under the race detector.
 	SleepMax int
 	// Stack is the call stack.
 	Stack Stack
 	// Locked is set if the goroutine was locked to an OS thread.
+	//
+	// Not set when running under the race detector.
 	Locked bool
+
+	// Disallow initialization with unnamed parameters.
+	_ struct{}
 }
 
 // equal returns true only if both signatures are exactly equal.
@@ -629,27 +689,12 @@ func (s *Signature) SleepString() string {
 	return fmt.Sprintf("%d minutes", s.SleepMax)
 }
 
-// CreatedByString return a short context about the origin of this goroutine
-// signature.
-//
-// Deprecated: Format it yourself, will be removed in v2.
-func (s *Signature) CreatedByString(fullPath bool) string {
-	created := s.CreatedBy.Func.PkgDotName()
-	if created == "" {
-		return ""
-	}
-	created += " @ "
-	if fullPath {
-		created += s.CreatedBy.FullSrcLine()
-	} else {
-		created += s.CreatedBy.SrcLine()
-	}
-	return created
-}
-
-func (s *Signature) updateLocations(goroot, localgoroot, localgomod, gomodImportPath string, gopaths map[string]string) {
-	s.CreatedBy.updateLocations(goroot, localgoroot, localgomod, gomodImportPath, gopaths)
-	s.Stack.updateLocations(goroot, localgoroot, localgomod, gomodImportPath, gopaths)
+// updateLocations calls updateLocations on both CreatedBy and Stack and
+// returns true if they were both resolved.
+func (s *Signature) updateLocations(goroot, localgoroot string, localgomods, gopaths map[string]string) bool {
+	r := s.CreatedBy.updateLocations(goroot, localgoroot, localgomods, gopaths)
+	r = s.Stack.updateLocations(goroot, localgoroot, localgomods, gopaths) && r
+	return r
 }
 
 // Goroutine represents the state of one goroutine, including the stack trace.
@@ -661,6 +706,16 @@ type Goroutine struct {
 	ID int
 	// First is the goroutine first printed, normally the one that crashed.
 	First bool
+
+	// RaceWrite is true if a race condition was detected, and this goroutine was
+	// race on a write operation, otherwise it was a read.
+	RaceWrite bool
+	// RaceAddr is set to the address when a data race condition was detected.
+	// Otherwise it is 0.
+	RaceAddr uint64
+
+	// Disallow initialization with unnamed parameters.
+	_ struct{}
 }
 
 // Private stuff.
@@ -678,7 +733,7 @@ func nameArguments(goroutines []*Goroutine) {
 		for j := range goroutines[i].Stack.Calls {
 			for k := range goroutines[i].Stack.Calls[j].Args.Values {
 				arg := goroutines[i].Stack.Calls[j].Args.Values[k]
-				if arg.IsPtr() {
+				if arg.IsPtr {
 					objects[arg.Value] = object{
 						args:      append(objects[arg.Value].args, &goroutines[i].Stack.Calls[j].Args.Values[k]),
 						inPrimary: objects[arg.Value].inPrimary || i == 0,
