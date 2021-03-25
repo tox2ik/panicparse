@@ -1,3 +1,13 @@
+# The original author is refusing to make CTRL+C work as any self-respecting stream parser should.
+***
+Idk, they want to support some stupid windows-based workflow. They also think they understand handling of kill signals better than
+classical tools like awk, sed, cat, etc.
+I tried to ask for a merge: https://github.com/maruel/panicparse/pull/53
+whatevs....
+This fork handles ctrl+c correctly, and is otherwise based on master from upstream.
+***
+
+
 # panicparse
 
 Parses panic stack traces, densifies and deduplicates goroutines with similar
