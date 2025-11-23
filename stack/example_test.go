@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 
-	"github.com/maruel/panicparse/v2/stack"
+	"github.com/tox2ik/panicparse/v2/stack"
 )
 
 // Runs a crashing program and converts it to a dense text format like pp does.

@@ -8,19 +8,19 @@
 //
 // To install, run:
 //
-//	go install github.com/maruel/panicparse/v2/cmd/panic
+//	go install github.com/tox2ik/panicparse/v2/cmd/panic
 //	panic -help
 //	panic str |& pp
 //
 // Some panics require the race detector with -race:
 //
-//	go install -race github.com/maruel/panicparse/v2/cmd/panic
+//	go install -race github.com/tox2ik/panicparse/v2/cmd/panic
 //	panic race |& pp
 //
 // To use with optimization (-N) and inlining (-l) disabled, build with
 // -gcflags '-N -l' like:
 //
-//	go install -gcflags '-N -l' github.com/maruel/panicparse/v2/cmd/panic
+//	go install -gcflags '-N -l' github.com/tox2ik/panicparse/v2/cmd/panic
 package main
 
 // To add a new panic stack signature, add it to types type below, keeping the
@@ -39,9 +39,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/maruel/panicparse/v2/cmd/panic/internal"
-	correct "github.com/maruel/panicparse/v2/cmd/panic/internal/incorrect"
-	ùtf8 "github.com/maruel/panicparse/v2/cmd/panic/internal/utf8"
+	"github.com/tox2ik/panicparse/v2/cmd/panic/internal"
+	correct "github.com/tox2ik/panicparse/v2/cmd/panic/internal/incorrect"
+	ùtf8 "github.com/tox2ik/panicparse/v2/cmd/panic/internal/utf8"
 )
 
 func main() {
@@ -120,7 +120,7 @@ func recurse(i int) {
 func panicRaceDisabled(name string) {
 	help := "'panic %s' can only be used when built with the race detector.\n" +
 		"To build, use:\n" +
-		"  go install -race github.com/maruel/panicparse/v2/cmd/panic\n"
+		"  go install -race github.com/tox2ik/panicparse/v2/cmd/panic\n"
 	fmt.Fprintf(stdErr, help, name)
 }
 
@@ -342,7 +342,7 @@ var types = map[string]struct {
 			// https://github.com/golang/go/issues/20588
 			//
 			// Repro:
-			//   go install -race github.com/maruel/panicparse/v2/cmd/panic; panic asleep
+			//   go install -race github.com/tox2ik/panicparse/v2/cmd/panic; panic asleep
 			var mu sync.Mutex
 			mu.Lock()
 			mu.Lock()

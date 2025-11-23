@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/maruel/panicparse/v2/stack/webstack"
+	"github.com/tox2ik/panicparse/v2/stack/webstack"
 )
 
 func ExampleSnapshotHandler() {

@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/maruel/panicparse/v2/internal"
+	"github.com/tox2ik/panicparse/v2/internal"
 )
 
 func main() {

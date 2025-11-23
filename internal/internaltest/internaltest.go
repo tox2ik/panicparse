@@ -173,9 +173,9 @@ func build(tool string, race bool) string {
 	}
 	p := f.Name()
 	_ = f.Close()
-	path := "github.com/maruel/panicparse/cmd/"
+	path := "github.com/tox2ik/panicparse/cmd/"
 	if IsUsingModules() {
-		path = "github.com/maruel/panicparse/v2/cmd/"
+		path = "github.com/tox2ik/panicparse/v2/cmd/"
 	}
 	if err := Compile(path+tool, p, "", true, race); err != nil {
 		_ = os.Remove(p)

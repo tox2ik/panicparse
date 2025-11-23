@@ -18,7 +18,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/maruel/panicparse/v2/internal/internaltest"
+	"github.com/tox2ik/panicparse/v2/internal/internaltest"
 )
 
 // goarchList is a list of GOARCH values.
@@ -60,7 +60,7 @@ func TestAugment(t *testing.T) {
 		// Many test are hard to parse in 32 bits. Eventually we should fix these
 		// but I don't have time for this.
 		//
-		// The list is based on https://github.com/maruel/panicparse/issues/80.
+		// The list is based on https://github.com/tox2ik/panicparse/issues/80.
 		// I was able to locally reproduce amd64 and 386 but not the rest.
 		archBlock goarchList
 		want      Stack

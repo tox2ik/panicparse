@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/maruel/panicparse/v2/internal/internaltest"
+	"github.com/tox2ik/panicparse/v2/internal/internaltest"
 )
 
 func TestAggregateNotAggressive(t *testing.T) {
@@ -22,11 +22,11 @@ func TestAggregateNotAggressive(t *testing.T) {
 		"",
 		"goroutine 6 [chan receive]:",
 		"main.func·001({0x11000000, 2}, 3)",
-		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"\t/gopath/src/github.com/tox2ik/panicparse/stack/stack.go:72 +0x49",
 		"",
 		"goroutine 7 [chan receive]:",
 		"main.func·001({0x21000000, 2}, 3)",
-		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"\t/gopath/src/github.com/tox2ik/panicparse/stack/stack.go:72 +0x49",
 		"",
 	}
 	s, suffix, err := ScanSnapshot(bytes.NewBufferString(strings.Join(data, "\n")), io.Discard, defaultOpts())
@@ -50,7 +50,7 @@ func TestAggregateNotAggressive(t *testing.T) {
 								}},
 								{Value: 3},
 							}},
-							"/gopath/src/github.com/maruel/panicparse/stack/stack.go",
+							"/gopath/src/github.com/tox2ik/panicparse/stack/stack.go",
 							72),
 					},
 				},
@@ -71,7 +71,7 @@ func TestAggregateNotAggressive(t *testing.T) {
 								}},
 								{Value: 3},
 							}},
-							"/gopath/src/github.com/maruel/panicparse/stack/stack.go",
+							"/gopath/src/github.com/tox2ik/panicparse/stack/stack.go",
 							72),
 					},
 				},
@@ -95,15 +95,15 @@ func TestAggregateExactMatching(t *testing.T) {
 		"",
 		"goroutine 6 [chan receive]:",
 		"main.func·001({0x11000000, 2}, 3)",
-		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"\t/gopath/src/github.com/tox2ik/panicparse/stack/stack.go:72 +0x49",
 		"created by main.mainImpl",
-		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:74 +0xeb",
+		"\t/gopath/src/github.com/tox2ik/panicparse/stack/stack.go:74 +0xeb",
 		"",
 		"goroutine 7 [chan receive]:",
 		"main.func·001({0x11000000, 2}, 3)",
-		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"\t/gopath/src/github.com/tox2ik/panicparse/stack/stack.go:72 +0x49",
 		"created by main.mainImpl",
-		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:74 +0xeb",
+		"\t/gopath/src/github.com/tox2ik/panicparse/stack/stack.go:74 +0xeb",
 		"",
 	}
 	s, suffix, err := ScanSnapshot(bytes.NewBufferString(strings.Join(data, "\n")), io.Discard, defaultOpts())
@@ -122,7 +122,7 @@ func TestAggregateExactMatching(t *testing.T) {
 						newCall(
 							"main.mainImpl",
 							Args{},
-							"/gopath/src/github.com/maruel/panicparse/stack/stack.go",
+							"/gopath/src/github.com/tox2ik/panicparse/stack/stack.go",
 							74),
 					},
 				},
@@ -136,7 +136,7 @@ func TestAggregateExactMatching(t *testing.T) {
 								}},
 								{Value: 3},
 							}},
-							"/gopath/src/github.com/maruel/panicparse/stack/stack.go",
+							"/gopath/src/github.com/tox2ik/panicparse/stack/stack.go",
 							72),
 					},
 				},
@@ -157,15 +157,15 @@ func TestAggregateAggressive(t *testing.T) {
 		"",
 		"goroutine 6 [chan receive, 10 minutes]:",
 		"main.func·001({0x11000000, 2}, 3)",
-		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"\t/gopath/src/github.com/tox2ik/panicparse/stack/stack.go:72 +0x49",
 		"",
 		"goroutine 7 [chan receive, 50 minutes]:",
 		"main.func·001({0x21000000, 2}, 3)",
-		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"\t/gopath/src/github.com/tox2ik/panicparse/stack/stack.go:72 +0x49",
 		"",
 		"goroutine 8 [chan receive, 100 minutes]:",
 		"main.func·001({0x31000000, 2}, 3)",
-		"\t/gopath/src/github.com/maruel/panicparse/stack/stack.go:72 +0x49",
+		"\t/gopath/src/github.com/tox2ik/panicparse/stack/stack.go:72 +0x49",
 		"",
 	}
 	s, suffix, err := ScanSnapshot(bytes.NewBufferString(strings.Join(data, "\n")), io.Discard, defaultOpts())
@@ -191,7 +191,7 @@ func TestAggregateAggressive(t *testing.T) {
 								}},
 								{Value: 3},
 							}},
-							"/gopath/src/github.com/maruel/panicparse/stack/stack.go",
+							"/gopath/src/github.com/tox2ik/panicparse/stack/stack.go",
 							72),
 					},
 				},
@@ -206,7 +206,7 @@ func TestAggregateAggressive(t *testing.T) {
 
 func TestAggregateDeadlockPanic(t *testing.T) {
 	t.Parallel()
-	// Test for crash found at https://github.com/maruel/panicparse/issues/56.
+	// Test for crash found at https://github.com/tox2ik/panicparse/issues/56.
 	data := []string{
 		"panic: deadlock detected at fmut",
 		"",

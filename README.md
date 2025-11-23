@@ -2,7 +2,7 @@
 ***
 when CTRL-C is encountered,
 behave like classic tools such as awk, sed, cat, etc.
-merge refused: https://github.com/maruel/panicparse/pull/53
+merge refused: https://github.com/tox2ik/panicparse/pull/53
 ***
 
 # panicparse
@@ -11,14 +11,14 @@ Parses panic stack traces, densifies and deduplicates goroutines with similar
 stack traces. Helps debugging crashes and deadlocks in heavily parallelized
 process.
 
-[![PkgGoDev](https://pkg.go.dev/badge/github.com/maruel/panicparse/v2/stack)](https://pkg.go.dev/github.com/maruel/panicparse/v2/stack)
-[![codecov](https://codecov.io/gh/maruel/panicparse/branch/main/graph/badge.svg?token=izj1cLjUi3)](https://codecov.io/gh/maruel/panicparse)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/tox2ik/panicparse/v2/stack)](https://pkg.go.dev/github.com/maruel/panicparse/v2/stack)
+[![codecov](https://codecov.io/gh/tox2ik/panicparse/branch/main/graph/badge.svg?token=izj1cLjUi3)](https://codecov.io/gh/maruel/panicparse)
 [![go-recipes](https://raw.githubusercontent.com/nikolaydubina/go-recipes/main/badge.svg?raw=true)](https://github.com/nikolaydubina/go-recipes#-pretty-print-panic-messages)
 
 
 panicparse helps make sense of Go crash dumps:
 
-![Screencast](https://raw.githubusercontent.com/wiki/maruel/panicparse/parse.gif "Screencast")
+![Screencast](https://raw.githubusercontent.com/wiki/tox2ik/panicparse/parse.gif "Screencast")
 
 
 ## Features
@@ -26,9 +26,9 @@ panicparse helps make sense of Go crash dumps:
    * Race detector support, e.g. it can parse output produced by `go test -race`
    * HTML export.
    * Easy to use as an [HTTP Handler
-     middleware](https://pkg.go.dev/github.com/maruel/panicparse/v2/stack#example-package-HttpHandlerMiddleware).
+     middleware](https://pkg.go.dev/github.com/tox2ik/panicparse/v2/stack#example-package-HttpHandlerMiddleware).
    * High performance parsing.
-   * [HTTP web server](https://pkg.go.dev/github.com/maruel/panicparse/v2/stack/webstack#SnapshotHandler)
+   * [HTTP web server](https://pkg.go.dev/github.com/tox2ik/panicparse/v2/stack/webstack#SnapshotHandler)
      that serves a very tight and swell snapshot of your goroutines, much more
      readable than [net/http/pprof](https://pkg.go.dev/net/http/pprof).
    * &gt;50% more compact output than original stack dump yet more readable.
@@ -43,7 +43,7 @@ panicparse helps make sense of Go crash dumps:
 
 ## Installation
 
-    go install github.com/maruel/panicparse/v2/cmd/pp@latest
+    go install github.com/tox2ik/panicparse/v2/cmd/pp@latest
 
 
 ## Usage
@@ -158,7 +158,7 @@ you may be running the _Perl PAR Packager_ instead of panicparse.
 You have two choices, either you put `$GOPATH/bin` at the beginning of `$PATH`
 or use long name `panicparse` with:
 
-    go install github.com/maruel/panicparse/v2@latest
+    go install github.com/tox2ik/panicparse/v2@latest
 
 then using `panicparse` instead of `pp`:
 
@@ -176,14 +176,14 @@ Hint: You may also use shell aliases
 ### webstack in action
 
 The
-[webstack.SnapshotHandler](https://pkg.go.dev/github.com/maruel/panicparse/v2/stack/webstack#SnapshotHandler)
+[webstack.SnapshotHandler](https://pkg.go.dev/github.com/tox2ik/panicparse/v2/stack/webstack#SnapshotHandler)
 http.Handler enables glancing at at a snapshot of your process trivially:
 
-![Screencast](https://raw.githubusercontent.com/wiki/maruel/panicparse/panicparse_webstack.gif "Screencast")
+![Screencast](https://raw.githubusercontent.com/wiki/tox2ik/panicparse/panicparse_webstack.gif "Screencast")
 
 
 ## Authors
 
 `panicparse` was created with ❤️️ and passion by [Marc-Antoine
 Ruel](https://github.com/maruel) and
-[friends](https://github.com/maruel/panicparse/graphs/contributors).
+[friends](https://github.com/tox2ik/panicparse/graphs/contributors).

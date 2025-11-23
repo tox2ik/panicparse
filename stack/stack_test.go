@@ -24,10 +24,10 @@ func TestFuncInit(t *testing.T) {
 		want Func
 	}{
 		{
-			"github.com/maruel/panicparse/cmd/panic/internal/%c3%b9tf8.(*Strùct).Pànic",
+			"github.com/tox2ik/panicparse/cmd/panic/internal/%c3%b9tf8.(*Strùct).Pànic",
 			Func{
-				Complete:   "github.com/maruel/panicparse/cmd/panic/internal/ùtf8.(*Strùct).Pànic",
-				ImportPath: "github.com/maruel/panicparse/cmd/panic/internal/ùtf8",
+				Complete:   "github.com/tox2ik/panicparse/cmd/panic/internal/ùtf8.(*Strùct).Pànic",
+				ImportPath: "github.com/tox2ik/panicparse/cmd/panic/internal/ùtf8",
 				DirName:    "ùtf8",
 				Name:       "(*Strùct).Pànic",
 				IsExported: true,
@@ -43,10 +43,10 @@ func TestFuncInit(t *testing.T) {
 			},
 		},
 		{
-			"github.com/maruel/panicparse/vendor/golang.org/x/sys/unix.Nanosleep",
+			"github.com/tox2ik/panicparse/vendor/golang.org/x/sys/unix.Nanosleep",
 			Func{
-				Complete:   "github.com/maruel/panicparse/vendor/golang.org/x/sys/unix.Nanosleep",
-				ImportPath: "github.com/maruel/panicparse/vendor/golang.org/x/sys/unix",
+				Complete:   "github.com/tox2ik/panicparse/vendor/golang.org/x/sys/unix.Nanosleep",
+				ImportPath: "github.com/tox2ik/panicparse/vendor/golang.org/x/sys/unix",
 				DirName:    "unix",
 				Name:       "Nanosleep",
 				IsExported: true,
@@ -139,36 +139,36 @@ func TestCallPkg(t *testing.T) {
 		{
 			name:         "Main",
 			f:            "main.main",
-			s:            "/gpremote/src/github.com/maruel/panicparse/cmd/pp/main.go",
+			s:            "/gpremote/src/github.com/tox2ik/panicparse/cmd/pp/main.go",
 			DirSrc:       pathJoin("pp", "main.go"),
 			SrcName:      "main.go",
-			LocalSrcPath: "/gplocal/src/github.com/maruel/panicparse/cmd/pp/main.go",
-			RelSrcPath:   "github.com/maruel/panicparse/cmd/pp/main.go",
-			ImportPath:   "github.com/maruel/panicparse/cmd/pp",
+			LocalSrcPath: "/gplocal/src/github.com/tox2ik/panicparse/cmd/pp/main.go",
+			RelSrcPath:   "github.com/tox2ik/panicparse/cmd/pp/main.go",
+			ImportPath:   "github.com/tox2ik/panicparse/cmd/pp",
 			Location:     GOPATH,
 		},
 		{
 			// See testPanicMismatched in context_test.go.
 			name:         "Mismatched",
-			f:            "github.com/maruel/panicparse/cmd/panic/internal/incorrect.Panic",
-			s:            "/gpremote/src/github.com/maruel/panicparse/cmd/panic/internal/incorrect/correct.go",
+			f:            "github.com/tox2ik/panicparse/cmd/panic/internal/incorrect.Panic",
+			s:            "/gpremote/src/github.com/tox2ik/panicparse/cmd/panic/internal/incorrect/correct.go",
 			DirSrc:       pathJoin("incorrect", "correct.go"),
 			SrcName:      "correct.go",
-			LocalSrcPath: "/gplocal/src/github.com/maruel/panicparse/cmd/panic/internal/incorrect/correct.go",
-			RelSrcPath:   "github.com/maruel/panicparse/cmd/panic/internal/incorrect/correct.go",
-			ImportPath:   "github.com/maruel/panicparse/cmd/panic/internal/incorrect",
+			LocalSrcPath: "/gplocal/src/github.com/tox2ik/panicparse/cmd/panic/internal/incorrect/correct.go",
+			RelSrcPath:   "github.com/tox2ik/panicparse/cmd/panic/internal/incorrect/correct.go",
+			ImportPath:   "github.com/tox2ik/panicparse/cmd/panic/internal/incorrect",
 			Location:     GOPATH,
 		},
 		{
 			// See testPanicUTF8 in context_test.go.
 			name:         "UTF8",
-			f:            "github.com/maruel/panicparse/cmd/panic/internal/%c3%b9tf8.(*Strùct).Pànic",
-			s:            "/gpremote/src/github.com/maruel/panicparse/cmd/panic/internal/ùtf8/utf8.go",
+			f:            "github.com/tox2ik/panicparse/cmd/panic/internal/%c3%b9tf8.(*Strùct).Pànic",
+			s:            "/gpremote/src/github.com/tox2ik/panicparse/cmd/panic/internal/ùtf8/utf8.go",
 			DirSrc:       pathJoin("ùtf8", "utf8.go"),
 			SrcName:      "utf8.go",
-			LocalSrcPath: "/gplocal/src/github.com/maruel/panicparse/cmd/panic/internal/ùtf8/utf8.go",
-			RelSrcPath:   "github.com/maruel/panicparse/cmd/panic/internal/ùtf8/utf8.go",
-			ImportPath:   "github.com/maruel/panicparse/cmd/panic/internal/ùtf8",
+			LocalSrcPath: "/gplocal/src/github.com/tox2ik/panicparse/cmd/panic/internal/ùtf8/utf8.go",
+			RelSrcPath:   "github.com/tox2ik/panicparse/cmd/panic/internal/ùtf8/utf8.go",
+			ImportPath:   "github.com/tox2ik/panicparse/cmd/panic/internal/ùtf8",
 			Location:     GOPATH,
 		},
 		{
@@ -538,7 +538,7 @@ func getSignature() *Signature {
 				{
 					Func:          newFunc("main.func·001"),
 					Args:          Args{Values: []Arg{{Value: 0x11000000}, {Value: 2}}},
-					RemoteSrcPath: "/gopath/src/github.com/maruel/panicparse/stack/stack.go",
+					RemoteSrcPath: "/gopath/src/github.com/tox2ik/panicparse/stack/stack.go",
 					Line:          72,
 				},
 				{

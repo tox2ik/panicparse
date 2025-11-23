@@ -1,4 +1,4 @@
-module github.com/maruel/panicparse/v2
+module github.com/tox2ik/panicparse/v2
 
 go 1.23.0
 

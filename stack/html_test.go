@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maruel/panicparse/v2/internal/internaltest"
+	"github.com/tox2ik/panicparse/v2/internal/internaltest"
 )
 
 func TestAggregated_ToHTML_2Buckets(t *testing.T) {
@@ -147,9 +147,9 @@ func TestGetSrcBranchURL(t *testing.T) {
 		{
 			"vendor",
 			newCallLocal(
-				"github.com/maruel/panicparse/vendor/golang.org/x/sys/unix.Nanosleep",
+				"github.com/tox2ik/panicparse/vendor/golang.org/x/sys/unix.Nanosleep",
 				Args{},
-				gopath+"/src/github.com/maruel/panicparse/vendor/golang.org/x/sys/unix/zsyscall_linux_amd64.go",
+				gopath+"/src/github.com/tox2ik/panicparse/vendor/golang.org/x/sys/unix/zsyscall_linux_amd64.go",
 				1100),
 			"https://github.com/golang/sys/blob/master/unix/zsyscall_linux_amd64.go#L1100",
 			"master",
@@ -313,7 +313,7 @@ func getBuckets() *Aggregated {
 							newCall(
 								"main.func·001",
 								Args{Values: []Arg{{Value: 0x11000000}, {Value: 2}}},
-								"/gopath/src/github.com/maruel/panicparse/stack/stack.go",
+								"/gopath/src/github.com/tox2ik/panicparse/stack/stack.go",
 								72),
 							{
 								Func:          newFunc("sliceInternal"),

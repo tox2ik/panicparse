@@ -29,7 +29,7 @@ import (
 	"regexp"
 	"syscall"
 
-	"github.com/maruel/panicparse/v2/stack"
+	"github.com/tox2ik/panicparse/v2/stack"
 	"github.com/mattn/go-colorable"
 	"github.com/mattn/go-isatty"
 	"github.com/mgutz/ansi"
@@ -65,7 +65,7 @@ var defaultPalette = Palette{
 
 func writeBucketsToConsole(out io.Writer, p *Palette, a *stack.Aggregated, pf pathFormat, needsEnv bool, filter, match *regexp.Regexp) error {
 	if needsEnv {
-		_, _ = io.WriteString(out, "\nTo see all goroutines, visit https://github.com/maruel/panicparse#gotraceback\n\n")
+		_, _ = io.WriteString(out, "\nTo see all goroutines, visit https://github.com/tox2ik/panicparse#gotraceback\n\n")
 	}
 	srcLen, pkgLen := calcBucketsLengths(a, pf)
 	multi := len(a.Buckets) > 1
@@ -85,7 +85,7 @@ func writeBucketsToConsole(out io.Writer, p *Palette, a *stack.Aggregated, pf pa
 
 func writeGoroutinesToConsole(out io.Writer, p *Palette, s *stack.Snapshot, pf pathFormat, needsEnv bool, filter, match *regexp.Regexp) error {
 	if needsEnv {
-		_, _ = io.WriteString(out, "\nTo see all goroutines, visit https://github.com/maruel/panicparse#gotraceback\n\n")
+		_, _ = io.WriteString(out, "\nTo see all goroutines, visit https://github.com/tox2ik/panicparse#gotraceback\n\n")
 	}
 	srcLen, pkgLen := calcGoroutinesLengths(s, pf)
 	multi := len(s.Goroutines) > 1
@@ -115,7 +115,7 @@ func toHTML(h toHTMLer, p string, needsEnv bool) error {
 	}
 	var footer template.HTML
 	if needsEnv {
-		footer = "To see all goroutines, visit <a href=https://github.com/maruel/panicparse#gotraceback>github.com/maruel/panicparse</a>"
+		footer = "To see all goroutines, visit <a href=https://github.com/tox2ik/panicparse#gotraceback>github.com/maruel/panicparse</a>"
 	}
 	err = h.ToHTML(f, footer)
 	if err2 := f.Close(); err == nil {

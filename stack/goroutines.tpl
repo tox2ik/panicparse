@@ -87,7 +87,7 @@
 
 <meta charset="UTF-8">
 <meta name="author" content="Marc-Antoine Ruel" >
-<meta name="generator" content="https://github.com/maruel/panicparse" >
+<meta name="generator" content="https://github.com/tox2ik/panicparse" >
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PanicParse</title>
 <link rel="shortcut icon" type="image/gif" href="data:image/gif;base64,{{.Favicon}}"/>

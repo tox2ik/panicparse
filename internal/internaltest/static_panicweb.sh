@@ -6,7 +6,7 @@
 set -eu
 
 eval `go env | grep 'GOROOT\|GOPATH'`
-go install github.com/maruel/panicparse/cmd/panicweb
+go install github.com/tox2ik/panicparse/cmd/panicweb
 panicweb -port 1212 &
 trap "trap - TERM && kill -- -$$" INT TERM EXIT
 sleep 1
