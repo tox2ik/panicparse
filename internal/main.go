@@ -115,7 +115,7 @@ func toHTML(h toHTMLer, p string, needsEnv bool) error {
 	}
 	var footer template.HTML
 	if needsEnv {
-		footer = "To see all goroutines, visit <a href=https://github.com/tox2ik/panicparse#gotraceback>github.com/maruel/panicparse</a>"
+		footer = "To see all goroutines, visit <a href=https://github.com/tox2ik/panicparse#gotraceback>github.com/tox2ik/panicparse</a>"
 	}
 	err = h.ToHTML(f, footer)
 	if err2 := f.Close(); err == nil {
