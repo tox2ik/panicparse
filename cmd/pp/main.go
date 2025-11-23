@@ -11,6 +11,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/tox2ik/panicparse/v2/internal"
 )
