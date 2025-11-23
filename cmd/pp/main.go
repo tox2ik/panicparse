@@ -16,8 +16,19 @@ import (
 )
 
 func main() {
+	SetupCloseHandler()
 	if err := internal.Main(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed: %s\n", err)
 		os.Exit(1)
 	}
 }
+
+func SetupCloseHandler() {
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		os.Exit(0)
+	}()
+}
+
