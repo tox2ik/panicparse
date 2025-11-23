@@ -3,6 +3,8 @@
 when CTRL-C is encountered,
 behave like classic tools such as awk, sed, cat, etc.
 merge refused: https://github.com/tox2ik/panicparse/pull/53
+.
+.
 ***
 
 # panicparse
@@ -11,8 +13,8 @@ Parses panic stack traces, densifies and deduplicates goroutines with similar
 stack traces. Helps debugging crashes and deadlocks in heavily parallelized
 process.
 
-[![PkgGoDev](https://pkg.go.dev/badge/github.com/tox2ik/panicparse/v2/stack)](https://pkg.go.dev/github.com/maruel/panicparse/v2/stack)
-[![codecov](https://codecov.io/gh/tox2ik/panicparse/branch/main/graph/badge.svg?token=izj1cLjUi3)](https://codecov.io/gh/maruel/panicparse)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/tox2ik/panicparse/v2/stack)](https://pkg.go.dev/github.com/tox2ik/panicparse/v2/stack)
+[![codecov](https://codecov.io/gh/tox2ik/panicparse/branch/main/graph/badge.svg?token=izj1cLjUi3)](https://codecov.io/gh/tox2ik/panicparse)
 [![go-recipes](https://raw.githubusercontent.com/nikolaydubina/go-recipes/main/badge.svg?raw=true)](https://github.com/nikolaydubina/go-recipes#-pretty-print-panic-messages)
 
 
